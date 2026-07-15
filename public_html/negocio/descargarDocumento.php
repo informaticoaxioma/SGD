@@ -18,11 +18,19 @@ if ($_POST) {
     $nombreFormat = str_replace(".", "_", $nombreAux[0]);
     $nombreFormat = str_replace(" ", "_", $nombreFormat);
     $nombreFormat = str_replace(",", "_", $nombreFormat);
-    $nombrefinal = $nombreFormat . "." . $mime;
+
+    // If mime is a full type like application/pdf, use the extension part for filename
+    $extension = $mime;
+    if (strpos($mime, '/') !== false) {
+        $parts = explode('/', $mime);
+        $extension = end($parts);
+    }
+
+    $nombrefinal = $nombreFormat . "." . $extension;
     $contenido = $doc[0]['documento'];
 
     header("Content-type: $mime");
-    header("Content-Disposition: attachment; filename=" . $nombrefinal);
+    header('Content-Disposition: attachment; filename="' . $nombrefinal . '"');
 
     echo $contenido;
 }
