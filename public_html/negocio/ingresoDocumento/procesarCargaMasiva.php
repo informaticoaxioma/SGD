@@ -81,17 +81,16 @@ if ($_POST) {
 
             error_log("------------- totalFilas : " . $totalFilas);
 
-            // Associative array to hold the mapping of 'Numero Providencia' to file information
+            // Build an array of uploaded files to search by filename
             $fileMap = [];
-            foreach ($_FILES['cargaDocumentos']['name'] as $index => $name) {
-                // Extract the number from the file name. Assuming the file name starts with a number followed by a dot, e.g., "123.filename.pdf"
-                if (preg_match('/^(\d+)\./', $name, $matches)) {
-                    $numeroProvidencia = (int)$matches[1];
-                    $fileMap[$numeroProvidencia] = [
+            if (isset($_FILES['cargaDocumentos']) && isset($_FILES['cargaDocumentos']['name'])) {
+                foreach ($_FILES['cargaDocumentos']['name'] as $index => $name) {
+                    $fileMap[] = [
                         'tmp_name' => $_FILES['cargaDocumentos']['tmp_name'][$index],
                         'size' => $_FILES['cargaDocumentos']['size'][$index],
                         'name' => $name,
-                        'type' => $_FILES['cargaDocumentos']['type'][$index]
+                        'type' => $_FILES['cargaDocumentos']['type'][$index],
+                        'name_lc' => strtolower($name)
                     ];
                 }
             }
@@ -105,21 +104,34 @@ if ($_POST) {
                 $detalle = new DetalleDocumento();
                 $idDocumento = $serviceDocumento->getMaxIdDocumento() + 1;
                 $controllerDocumento = new DocumentoController();
-                // Extracting 'Numero Providencia' from the current row
+                // Extracting fields from the current row
                 $numeroProvidencia = $sheet->getCell('A' . $i)->getValue();
-                //FILE
-                // Check if there is a file associated with the current 'Numero Providencia'
-                if (isset($fileMap[$numeroProvidencia])) {
-                    // Get the file information for the current 'Numero Providencia'
-                    $fileInfo = $fileMap[$numeroProvidencia];
-                    $fileContent = file_get_contents($fileInfo['tmp_name']);
-                    $fileSize = $fileInfo['size'];
-                    $fileName = $fileInfo['name'];
-                    $fileType = $fileInfo['type'];
-                    $documento->setNombreDocumento($fileName);
-                } else {
-                    // Handle the case where no file is found for the current row
-                    error_log("No file found for 'Numero Providencia': " . $numeroProvidencia);
+                // Match uploaded files by the 'Num Documento' (column D) contained in the filename
+                $numDocumentoFila = trim((string)$sheet->getCell('D' . $i)->getValue());
+
+                $fileContent = null;
+                $fileSize = 0;
+                $fileName = "";
+                $fileType = "";
+                $matched = false;
+
+                if ($numDocumentoFila !== "" && !empty($fileMap)) {
+                    $numDocumentoLc = strtolower($numDocumentoFila);
+                    foreach ($fileMap as $fi) {
+                        if (strpos($fi['name_lc'], $numDocumentoLc) !== false) {
+                            $fileContent = file_get_contents($fi['tmp_name']);
+                            $fileSize = $fi['size'];
+                            $fileName = $fi['name'];
+                            $fileType = $fi['type'];
+                            $documento->setNombreDocumento($fileName);
+                            $matched = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!$matched) {
+                    error_log("No file found matching Num Documento '" . $numDocumentoFila . "' for row " . $i);
                     $documento->setNombreDocumento("");
                 }
                 
