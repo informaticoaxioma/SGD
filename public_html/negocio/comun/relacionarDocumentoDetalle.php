@@ -1,0 +1,31 @@
+<?php
+
+require_once '../../data/Seguimiento.php';
+session_start();
+
+if ($_POST):
+
+    $serviceSeguimiento = new Seguimiento();
+
+    $idDocumento = htmlspecialchars($_POST['idDocumento']);
+
+    $documentosRelacionados = array();
+    $documentosRelacionados = $_SESSION['documentosRelacionadosDetalle'];
+
+    //Verificar si el documento ingresado tiene numero de seguimiento
+    $numeroSeguimiento = $serviceSeguimiento->getNumeroSeguimientoPorIdDocumento($_SESSION['documentoPadre']);
+   $a = '';
+    if (count($documentosRelacionados) > 0):
+        for ($i = 0; $i < count($documentosRelacionados); $i++) {
+            $serviceSeguimiento->actualizarSeguimientoPorDocumento($documentosRelacionados[$i], $numeroSeguimiento);
+        }
+
+    endif;
+
+
+    unset($_SESSION['documentosRelacionadosDetalle']);
+    unset($documentosRelacionados);
+    
+    echo 1;
+
+endif;

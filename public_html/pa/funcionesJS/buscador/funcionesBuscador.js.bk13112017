@@ -1,0 +1,187 @@
+$(document).ready(function () {
+
+//METODO PARA REALIZAR LA PAGINACION POR AJAX... SE EDITAN METODOS DEL PLUGIN ZEBRA PAGINATION
+    $(".aPagination").click(function (e) {
+        e.preventDefault();
+        var page = $(this).html();//OBTENGO EL NUMERO DE LA PAGINA
+        page = parseInt(page) ;        //se envian las variables de nuevo para continuar con los resultados de la paginacion
+        var numDocumento = $("#numDocumento").val();
+        var numProvidencia = $("#numProvidencia").val();
+        var numProceso = $("#numProceso").val();
+        var fechaDocBuscar = $("#fechaDocBuscar").val();
+        var fechaRecepcionBuscar = $("#fechaRecepcionBuscar").val();
+        var fechaPlazoBuscar = $("#fechaPlazoBuscar").val();
+        var idTipoDoc = $("#idTipoDoc").val();
+        var idRemitente = $("#idRemitente").val();
+        var idDestinatario = $("#idDestinatario").val();
+        var idResponsable = $("#idResponsable").val();
+        var idFlujo = $("#idFlujo").val();
+
+
+        $.post("../negocio/buscador/procesarBuscador.php", {"page": page, "numDocumento": numDocumento, "numProvidencia": numProvidencia,
+            "numProceso": numProceso, "fechaDocBuscar": fechaDocBuscar, "fechaRecepcionBuscar": fechaRecepcionBuscar, "idTipoDoc": idTipoDoc,
+            "idRemitente": idRemitente, "idDestinatario": idDestinatario, "idResponsable": idResponsable, "idFlujo": idFlujo, "fechaPlazoBuscar": fechaPlazoBuscar}, function (r) {//REALIZO A CONSULTA CON AJAX
+
+            $.getScript("funcionesJS/buscador/funcionesBuscador.js");//CARGO EL SCRIPT
+            $(".divAjax").html(r);//CARGO EL RESULTADO
+
+        });
+
+    });
+
+//METODO PARA REALIZAR LA PAGINACION POR AJAX... SE EDITAN METODOS DEL PLUGIN ZEBRA PAGINATION
+//SE ACTIVA AL PRESIONAR EL BOTON >> DE LA PAGINACION
+    $(".siguiente").click(function (e) {
+        e.preventDefault();
+        var prueba = $(".siguiente > input");
+        var size = prueba.size();
+        $.each( prueba, function(i, val){
+          page=parseInt($(val).val())+1;
+        });
+
+//se envian las variables de nuevo para continuar con los resultados de la paginacion
+        var numDocumento = $("#numDocumento").val();
+        var numProvidencia = $("#numProvidencia").val();
+        var numProceso = $("#numProceso").val();
+        var fechaDocBuscar = $("#fechaDocBuscar").val();
+        var fechaRecepcionBuscar = $("#fechaRecepcionBuscar").val();
+        var fechaPlazoBuscar = $("#fechaPlazoBuscar").val();
+        var idTipoDoc = $("#idTipoDoc").val();
+        var idRemitente = $("#idRemitente").val();
+        var idDestinatario = $("#idDestinatario").val();
+        var idResponsable = $("#idResponsable").val();
+        var idFlujo = $("#idFlujo").val();
+
+        $.post("../negocio/buscador/procesarBuscador.php", {"page": page, "numDocumento": numDocumento, "numProvidencia": numProvidencia,
+            "numProceso": numProceso, "fechaDocBuscar": fechaDocBuscar, "fechaRecepcionBuscar": fechaRecepcionBuscar, "idTipoDoc": idTipoDoc,
+            "idRemitente": idRemitente, "idDestinatario": idDestinatario, "idResponsable": idResponsable, "idFlujo": idFlujo, "fechaPlazoBuscar": fechaPlazoBuscar}, function (r) {//REALIZO A CONSULTA CON AJAX
+
+            $.getScript("funcionesJS/buscador/funcionesBuscador.js");//CARGO EL SCRIPT
+            $(".divAjax").html(r);//CARGO EL RESULTADO
+
+        });
+
+    });
+
+    //PROCESANDO EL FORMULARIO DE BUSQUEDA
+    $("#formBuscador").validate({
+        rules: {
+        },
+        messages: {
+        },
+        submitHandler: function () {
+            //VARIABLES
+            var numDocumento = $("#numDocumento").val();
+            var numProvidencia = $("#numProvidencia").val();
+            var numProceso = $("#numProceso").val();
+            var fechaDocBuscar = $("#fechaDocBuscar").val();
+            var fechaRecepcionBuscar = $("#fechaRecepcionBuscar").val();
+            var fechaPlazoBuscar = $("#fechaPlazoBuscar").val();
+            var idTipoDoc = $("#idTipoDoc").val();
+            var idRemitente = $("#idRemitente").val();
+            var idDestinatario = $("#idDestinatario").val();
+            var idResponsable = $("#idResponsable").val();
+            var idFlujo = $("#idFlujoB").val();
+            var materiaBuscar = $("#materiaBuscar").val();
+
+            bloquearPantalla();
+
+            //PROCESANDO LA PETICION POR AJAX
+            $.post("../negocio/buscador/buscadorAjax.php", {id:1,"numDocumento": numDocumento, "numProvidencia": numProvidencia,
+                "numProceso": numProceso, "fechaDocBuscar": fechaDocBuscar, "fechaRecepcionBuscar": fechaRecepcionBuscar, "idTipoDoc": idTipoDoc,
+                "idRemitente": idRemitente, "idDestinatario": idDestinatario, "idResponsable": idResponsable, "idFlujo": idFlujo,
+                "materiaBuscar": materiaBuscar, "fechaPlazoBuscar": fechaPlazoBuscar},
+                    function (r) {
+
+                        $.getScript("funcionesJS/buscador/funcionesBuscador.js");//CARGO EL SCRIPT
+                        $(".gifCarga").hide("fast");//ESCONDO EL GIF DE CARGA
+                        $(".divAjax").html(r);//CARGO LOS RESULTADOS
+
+                            $("#tablaResultadoBusqueda").DataTable( {
+
+                                "pageLength": 50,
+                                dom: 'Bfrtip',
+                                buttons: [
+                                    'copy', 'csv', 'excel'
+                                ]
+                            } );
+                        //$("#tablaResultadoBusqueda").dataTable();
+                        desbloquearPantalla();
+                    });
+        }
+    });
+});
+
+function bloquearPantalla() {
+    $.blockUI(
+            {
+                message: '<img src="media/30.gif" /><h2> Procesando, por favor espere.</h2>',
+                css: {
+                    border: 'none',
+                    padding: '15px',
+                    backgroundColor: '#000',
+                    '-webkit-border-radius': '10px',
+                    '-moz-border-radius': '10px',
+                    opacity: .5,
+                    color: '#fff'
+
+                }
+            }
+    );
+
+    $("#sideNav a").addClass("bloqueo-link");
+}
+
+function desbloquearPantalla() {
+    $.unblockUI();
+    $("#sideNav a").removeClass("bloqueo-link");
+}
+
+
+
+function eliminarDocumento(idDocumento, idFila) {
+    swal({//SETEANDO PLUGIN SWEET ALERT
+        title: '¿Esta seguro que desea eliminar el Documento?',
+        type: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#3085d6',
+        cancelButtonColor: '#d33',
+        confirmButtonText: 'Si, eliminar',
+        cancelButtonText: 'No, cancelar!',
+        confirmButtonClass: 'btn btn-success',
+        cancelButtonClass: 'btn btn-danger',
+        buttonsStyling: false
+    }).then(function () {
+
+        //ejecutando el metodo
+        $.post("../negocio/inicio/procesarActualizarDocumento.php", {"idDocumento": idDocumento, "flagDoc": 4}, function (r) {
+
+            if (r == '1') {
+                swal(
+                        '¡Documento Eliminado Exitosamente!',
+                        '',
+                        'success'
+                        );
+                $("#" + idFila + "").hide();
+
+            } else {
+                swal(
+                        'Error',
+                        'No se ha podido eliminar el Documento',
+                        'error'
+                        );
+            }
+        });
+    }, function (dismiss) {//CANCELAR ACCION
+
+        if (dismiss === 'cancel') {
+            swal(
+                    'Cancelado',
+                    'El documento no fue eliminado',
+                    'error'
+                    );
+        }
+    });
+
+}
+

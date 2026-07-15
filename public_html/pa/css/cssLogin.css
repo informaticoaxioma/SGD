@@ -1,0 +1,298 @@
+/* ==========================================================================
+   Software Gestión Operaciones Fiscales - Login / Recuperar Contraseña
+   Rediseño moderno · Paleta burdeo sobre fondo blanco
+   NOTA: Se mantienen todos los IDs, clases y selectores originales
+         para no alterar el funcionamiento de PHP/JavaScript.
+   ========================================================================== */
+
+:root {
+    --burdeo: #761c19;
+    --burdeo-oscuro: #5a1512;
+    --burdeo-claro: #9a3b38;
+    --burdeo-suave: #f5e9e9;
+    --gris-texto: #333333;
+    --gris-borde: #e5e0e0;
+    --blanco: #ffffff;
+    --sombra-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+    --sombra-md: 0 6px 24px rgba(118, 28, 25, 0.12);
+    --sombra-lg: 0 16px 48px rgba(118, 28, 25, 0.18);
+    --radio: 14px;
+}
+
+html, body {
+    padding: 0;
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--gris-texto);
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    background-image: url('../images/loginSGD.jpg');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+}
+
+#bodyLogin,#body-recuperar-pass{
+    width: 100%;
+    height: 100%;
+    background-image: url("../media/libros.jpg");
+    background-size: 100%;
+    background-attachment:fixed;  
+    -webkit-background-size:cover;
+    -moz-background-size:cover;
+    -o-background-size:cover;
+    background-size:cover;
+    background-position:center;
+}
+
+.help-block {
+    color: var(--burdeo) !important;
+    font-size: 0.95rem;
+    margin-top: 6px;
+    display: block;
+}
+
+.blanco {
+    color: #fff;
+}
+
+/* --------------------------------------------------------------------------
+   Fondo general (login y recuperar contraseña)
+   -------------------------------------------------------------------------- */
+#bodyLogin, #body-recuperar-pass {
+    width: 100%;
+    min-height: 100vh;
+    background-attachment: fixed;
+    background-size: cover;
+    background-position: center;
+    display: flex;
+    background-image: url('LoginSGD.jpeg');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+    flex-direction: column;
+}
+
+/* Borde de acento reutilizado en inputs y tarjetas */
+.bordeAxioma {
+    border: 2px solid var(--gris-borde) !important;
+    border-radius: 10px !important;
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.bordeAxioma:focus {
+    border-color: var(--burdeo) !important;
+    box-shadow: 0 0 0 4px rgba(118, 28, 25, 0.12) !important;
+    outline: none;
+}
+
+/* --------------------------------------------------------------------------
+   Link recuperar contraseña
+   -------------------------------------------------------------------------- */
+#linkRecuperarContrasena {
+    color: var(--burdeo);
+    font-weight: 600;
+    background-color: transparent;
+    text-decoration: none;
+    transition: color 0.2s ease;
+}
+
+#linkRecuperarContrasena:hover {
+    text-decoration: underline;
+    color: var(--burdeo-oscuro);
+}
+
+/* --------------------------------------------------------------------------
+   Tarjeta de login
+   -------------------------------------------------------------------------- */
+#divLogin {
+    text-align: center;
+    width: 100%;
+    max-width: 420px;
+    margin: 0 auto;
+    margin-top: 5vh;
+    background-color: var(--blanco);
+    border-radius: var(--radio);
+    box-shadow: var(--sombra-lg);
+    padding: 40px 36px;
+    box-sizing: border-box;
+    animation: aparecer 0.5s ease;
+}
+
+@keyframes aparecer {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --------------------------------------------------------------------------
+   Botón principal
+   -------------------------------------------------------------------------- */
+.btnApp {
+    background-color: var(--burdeo);
+    border: none;
+    color: white;
+    padding: 14px 32px;
+    text-align: center;
+    text-decoration: none;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    margin: 12px 0 0 0;
+    cursor: pointer;
+    border-radius: 10px;
+    width: 100%;
+    box-shadow: var(--sombra-sm);
+    transition-duration: 0.25s;
+    transition-property: background-color, box-shadow, transform;
+}
+
+.btnApp:hover {
+    background-color: var(--burdeo-oscuro);
+    box-shadow: var(--sombra-md);
+    transform: translateY(-1px);
+}
+
+.btnApp:active {
+    transform: translateY(0);
+}
+
+#btnIngresar {
+    margin-left: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Header
+   -------------------------------------------------------------------------- */
+#head {
+    border: none;
+    background: linear-gradient(135deg, var(--burdeo) 0%, var(--burdeo-oscuro) 100%);
+    margin-top: 0;
+    box-shadow: var(--sombra-md);
+    padding: 18px 24px;
+}
+
+#headTitulo {
+    color: white;
+    text-align: center;
+}
+
+#headTitulo h1 {
+    margin: 0;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+/* --------------------------------------------------------------------------
+   Footer
+   -------------------------------------------------------------------------- */
+.footer {
+    text-align: center;
+    position: fixed;
+    bottom: 0;
+    width: 100%;
+    border: none;
+    background: linear-gradient(135deg, var(--burdeo) 0%, var(--burdeo-oscuro) 100%);
+    box-shadow: 0 -4px 16px rgba(118, 28, 25, 0.2);
+    padding: 12px 0;
+    box-sizing: border-box;
+}
+
+.footer h2 {
+    color: white;
+    word-break: normal;
+    margin: 0;
+    font-weight: 500;
+}
+
+.color-principal {
+    background-color: var(--burdeo);
+}
+
+/* --------------------------------------------------------------------------
+   Campos de formulario (Bootstrap form-control)
+   -------------------------------------------------------------------------- */
+.form-control {
+    height: auto;
+    padding: 12px 14px;
+    font-size: 15px;
+    border-radius: 10px;
+    box-shadow: none;
+}
+
+.form-control:focus {
+    border-color: var(--burdeo);
+    box-shadow: 0 0 0 4px rgba(118, 28, 25, 0.12);
+}
+
+/* ==========================================================================
+   RECUPERAR CONTRASEÑA
+   ========================================================================== */
+#divRecuperarContrasena {
+    margin: 0 auto;
+    margin-top: 5vh;
+    width: 100%;
+    max-width: 460px;
+    background-color: var(--blanco);
+    border-radius: var(--radio);
+    padding: 40px 36px;
+    box-sizing: border-box;
+    box-shadow: var(--sombra-lg);
+    animation: aparecer 0.5s ease;
+}
+
+.no-display {
+    display: none;
+}
+
+/* ==========================================================================
+   Media Queries
+   ========================================================================== */
+@media only screen and (max-width: 359px) {
+    #divLogin {
+        margin-top: 8vh;
+        padding: 28px 20px;
+    }
+    #headTitulo h1 {
+        font-size: 1.2rem;
+    }
+    #btnIngresar {
+        margin-left: 0;
+    }
+    .footer h2 {
+        font-size: 0.8rem;
+    }
+}
+
+@media only screen and (min-width: 360px) and (max-width: 767px) {
+    #headTitulo h1 {
+        font-size: 1.4rem;
+    }
+    #btnIngresar {
+        margin-left: 0;
+    }
+    .footer h2 {
+        font-size: 0.85rem;
+    }
+    #divLogin {
+        max-width: 90%;
+        margin-top: 8vh;
+    }
+    #divRecuperarContrasena {
+        max-width: 90%;
+    }
+}
+
+@media only screen and (min-width: 768px) and (max-width: 980px) {
+    #btnIngresar {
+        margin-left: 0;
+    }
+    #divLogin {
+        max-width: 440px;
+        margin-top: 6vh;
+    }
+}

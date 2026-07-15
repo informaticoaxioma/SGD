@@ -1,0 +1,57 @@
+<?php require_once '../../negocio/inicio/procesarActualizarDocumento.php'; ?>
+<table class="table table-condensed table-hover">
+    <thead >
+        <tr class="text-center">
+            <th>N°Documento</th>
+            <th>N°Providencia</th>
+            <th>N°Proceso</th>
+            <th>Fecha Recepción</th>
+            <th>Materia</th>
+            <th>Comentario</th>
+            <th>Detalle</th>
+            <th>Descargar</th>
+            <?php //if ($usuarioSession->getIdPerfil() == 1 || $usuarioSession->getIdPerfil() == 3 || $usuarioSession->getIdPerfil() == 8): ?>
+               <!-- <th>Eliminar</th>-->
+            <?php //endif; ?>
+        </tr>
+    </thead>
+    <tbody>
+        <?php
+        $filaTabla = 0;
+        if (isset($seguimientos)) :
+
+            foreach ($seguimientos as $s) :
+                $documentoRel = $serviceDetalleDoc->getDocumentoYDetallePorId($s->getIdDocumento());
+                ?>
+                <tr id="<?php echo "filaTabla" . $filaTabla; ?>">
+                    <td><?php echo $documentoRel->getDetalle()->getNumDocumento(); ?></td>
+                    <td><?php echo $documentoRel->getDetalle()->getNumProvidencia(); ?></td>
+                    <td><?php echo $documentoRel->getDetalle()->getNumProceso(); ?></td>
+                    <td><?php echo $serviceFunciones->formatoFecha($documentoRel->getDocumento()->getFechaRecepcion()); ?></td>
+                    <td><?php echo $documentoRel->getDetalle()->getMateria(); ?></td>
+                    <td><?php echo $documentoRel->getDetalle()->getComentario(); ?></td>
+                    <td>
+                        <a href="detalleDocumentoBuscador.php?idDocumento=<?php echo $documentoRel->getDetalle()->getIdDocumento(); ?>" target="_blank">
+                            <label class="labelA">Ver Detalle</label>
+                        </a>
+                    </td>
+                    <td>
+                        <form id="formDescargarDocRel" method="POST" action="../negocio/inicio/procesarActualizarDocumento.php">
+                            <input type="hidden" name="flagDoc" value="3">
+                            <input name="idDocRelacionado" type="hidden" value="<?php echo $documentoRel->getDetalle()->getIdDocumento(); ?>">
+                            <input type="submit" class="btn btn-success btn-sm" value="Descargar">
+                        </form>
+                    </td>
+                    <?php //if ($usuarioSession->getIdPerfil() == 1 || $usuarioSession->getIdPerfil() == 3 || $usuarioSession->getIdPerfil() == 8): ?>
+                       <!-- <td>
+                            <input type="button" class="btn btn-danger btn-sm" onclick="eliminarDocAdjuntosRel(<?php echo $documentoRel->getDetalle()->getIdDocumento(); ?>, '<?php echo "filaTabla" . $filaTabla; ?>', 2)" value="Eliminar">
+                        </td> -->
+                    <?php // endif; ?>
+                </tr>
+                <?php
+                $filaTabla++;
+            endforeach;
+        endif;
+        ?>
+    </tbody>
+</table>

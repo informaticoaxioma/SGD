@@ -1,0 +1,1606 @@
+$(document).ready(function () {
+
+    $('a[href^="#"]').on('click', function (e) {
+        e.preventDefault();
+
+        var target = this.hash;
+        var $target = $(target);
+
+        $('html, body').stop().animate({
+            'scrollTop': $target.offset().top
+        }, 900, 'swing', function () {
+            window.location.hash = target;
+        });
+    });
+
+
+    //-----------------------------------//
+    //        LIMPIAR MENSAJES          //
+    //---------------------------------//
+    $(":button").click(function (r) {
+        r.preventDefault();
+    });
+
+    //cargando responsables segun subcontrato
+    $("#idSubContrato").change(function () {
+        $.get("../negocio/ingresoDocumento/responsablesAjax.php", { "idSubContrato": $(this).val() },
+            function (r) {
+                $(".responsables").html(r);
+            });
+    });
+    //cargando responsables segun subcontrato Multiple
+    $("#idSubContrato").change(function () {
+        $.get("../negocio/ingresoDocumento/responsablesAjaxMultiple.php", { "idSubContrato": $(this).val() },
+            function (r) {
+                $(".responsablesMultiple").html(r);
+            });
+    });
+
+    //cargando responsables segun subcontrato Multiple
+    $("#idSubContrato").change(function () {
+        $.get("../negocio/ingresoDocumento/corresponsablesAjaxMultiple.php", { "idSubContrato": $(this).val() },
+            function (r) {
+                $(".corrresponsablesMultiple").html(r);
+            });
+    });
+
+
+    $(":input").focus(function () {
+        $(".mensajeExito").hide("fast");
+        $(".mensajeError").hide("fast");
+        $("#mensajeValAccion").hide("fast");
+    });
+
+    //borrando error que deja Jqueryvalidator
+    $("#divFechaDoc").change(function () {
+        $("#divFechaDoc").removeClass("has-error");
+        $("#fechaDoc-error").hide("fast");
+    });
+
+    $("#divFechaRec").change(function () {
+        $("#divFechaRec").removeClass("has-error");
+        $("#fechaRecepcion-error").hide("fast");
+    });
+
+    //limpiar modal
+
+    $(".close").click(function () {
+
+        $("#formBuscarDocumentos").each(function () {
+            this.reset();
+        });
+
+        $(".mensajeError").hide("fast");
+        $(".resultadoAjax").empty();
+
+    });
+
+
+    $("#modalDocRel").on('hidden.bs.modal', function () {//limpiando el modal al perder el focus
+
+        $("#formBuscarDocumentos").each(function () {
+            this.reset();
+        });
+
+        $(".mensajeError").hide("fast");
+        $(".resultadoAjax").empty();
+    });
+
+
+    $("#modalAgregarEntidad").on('hidden.bs.modal', function () {//limpiando el modal al perder el focus
+
+        $(".mensajeError").hide("fast");
+        $(".resultadoAjax").empty();
+    });
+
+
+    $("#btnCerrarCargo").click(function () {
+        $("#nombreCargo").val("");
+        $("#divIngresarCargo").hide("fast");
+    });
+
+
+
+    //      AGREGAR CARGOS     //
+    $("#btnAgregarCargo").click(function () {
+
+
+        var nombreCargo = $.trim($("#nombreCargo").val());
+
+        if (nombreCargo == "") {
+
+            $("#lblError").fadeIn("fast");
+        } else {
+            $.post("../negocio/configuracion/cargos/procesarAdministrarCargos.php", { "nombreCargo": nombreCargo, "flag": 1 },
+                function (r) {
+
+                    if (r != -1) {
+                        $("#nombreCargo").val("");
+                        $("#lblError").hide("fast");
+                        //sweet alert
+                        swal(
+                            '¡Cargo ingresado exitosamente!',
+                            '',
+                            'success'
+                        );
+
+                        $('#idCargo').append('<option value="' + r + '">' + nombreCargo + '</option>');
+                    } else {
+                        //sweet alert
+                        swal(
+                            '¡Error, no se ha podido ingresar el cargo!',
+                            '',
+                            'error'
+                        );
+                    }
+                });
+        }
+
+    });
+
+    $("#nombreCargo").focus(function () {
+        $("#lblError").hide("fast");
+    });
+
+    //---------------------------------//
+    //      INGRESAR ENTRADA          //
+    //-------------------------------//
+
+    $("#btnMostrarCargo").click(function () {
+        $("#divIngresarCargo").fadeIn("fast");
+    });
+
+    //VALIDACION DE FORMULARIO INGRESAR ENTRADA
+
+    $("#formIngresarEntrada").validate({
+        rules: {
+            idSubContrato: {
+                required: true
+            },
+            numeroDoc: {
+                required: true,
+                maxlength: 50
+            },
+            numeroProv: {
+                required: true,
+                maxlength: 50
+            },
+            remitente: {
+                required: true
+            },
+            destinatario: {
+                required: true
+            },
+            materia: {
+                required: true,
+                espacioBlanco: true
+            },
+            incluye: {
+                required: true,
+                espacioBlanco: true
+            },
+            documento: {
+                required: true
+            },
+            idTipoDoc: {
+                required: true
+            },
+            fechaDoc: {
+                required: true,
+                formatoFecha: true
+            },
+            fechaRecepcion: {
+                required: true,
+                formatoFecha: true
+            },
+            idResponsable: {
+                required: true
+            },
+            idCorresponsable: {
+                required: false
+            }
+        },
+        messages: {
+            idSubContrato: {
+                required: "Por favor, seleccione Sub-Contrato"
+            },
+            numeroDoc: {
+                required: "Por favor, Ingrese número de Documento",
+                maxlength: "Error, límite de caracteres excedido"
+            },
+            numeroProv: {
+                required: "Por favor, Ingrese número de Providencia",
+                maxlength: "Error, límite de caracteres excedido"
+            },
+            remitente: {
+                required: "Por favor, ingrese Remitente"
+            },
+            destinatario: {
+                required: "Por favor, ingrese Destinatario"
+            },
+            materia: {
+                required: "Por favor, ingrese Materia",
+                espacioBlanco: "Error, no rellene con espacios"
+            },
+            incluye: {
+                required: "Por favor, ingrese Inclusión",
+                espacioBlanco: "Error, no rellene con espacios",
+                maxlength: "Error, límite de caracteres excedido"
+            },
+            documento: {
+                required: "Por favor, seleccione Documento"
+            },
+            idTipoDoc: {
+                required: "Por favor, seleccione tipo de documento"
+            },
+            fechaDoc: {
+                required: "Por favor, seleccione fecha de documento",
+                formatoFecha: "Error, formato de fecha incorrecto"
+            },
+            fechaRecepcion: {
+                required: "Por favor, seleccione fecha de recepcion",
+                formatoFecha: "Error, formato de fecha incorrecto"
+            },
+            idResponsable: {
+                required: "Por favor, seleccione responsable"
+            },
+            idCorresponsable: {
+                required: "Por favor, seleccione corresponsable"
+            }
+        },
+        submitHandler: function () {
+
+            var idSubContrato = $("#idSubContrato").val();
+            var numeroDoc = $("#numeroDoc").val();
+            var numeroProv = $("#numeroProv").val();
+            var remitente = $("#remitente").val();
+            var destinatario = $("#destinatario").val();
+            var materia = $("#materia").val();
+            var antecedente = $("#antecedente").val();
+            var incluye = $("#incluye").val();
+            var comentarios = $("#comentarios").val();
+            var idTipoDoc = $("#idTipoDoc").val();
+            var fechaDoc = $("#fechaDoc").val();
+            var fechaRecepcion = $("#fechaRecepcion").val();
+            var idResponsable = $("#idResponsable").val();
+            var idCorresponsable = $("#idCorresponsable").val();
+            var fechaPlazo = $("#fechaPlazo").val();
+            var documento = $("#documento")[0].files[0];
+            var idDocRelacionado = $("#idDocRelacionado").val();
+            var numeroProceso = $("#numeroProceso").val();
+
+            //acciones
+            var conocimiento = $("#conocimiento").is(":checked") ? $("#conocimiento").val() : "";
+            var coordinar = $("#coordinar").is(":checked") ? $("#coordinar").val() : "";
+            var conversar = $("#conversar").is(":checked") ? $("#conversar").val() : "";
+            var archivo = $("#archivo").is(":checked") ? $("#archivo").val() : "";
+            var responder = $("#responder").is(":checked") ? $("#responder").val() : "";
+            var revisar = $("#revisar").is(":checked") ? $("#revisar").val() : "";
+            var urgente = $("#urgente").is(":checked") ? $("#urgente").val() : "";
+
+
+            if (conocimiento == "" && coordinar == "" && conversar == "" && archivo == "" && responder == "" && revisar == "" && urgente == "") {
+                $("#mensajeValAccion").show("fast");//mostrando mensaje de validacion (error)       
+            } else {
+
+                //FORMDATA
+                var formData = new FormData();//instanceando objeto formadata para enviode datos y archivos 
+
+                //agregando datos
+                formData.append("idSubContrato", idSubContrato);
+                formData.append("numeroDoc", numeroDoc);
+                formData.append("numeroProv", numeroProv);
+                formData.append("remitente", remitente);
+                formData.append("destinatario", destinatario);
+                formData.append("materia", materia);
+                formData.append("antecedente", antecedente);
+                formData.append("incluye", incluye);
+                formData.append("comentarios", comentarios);
+                formData.append("idTipoDoc", idTipoDoc);
+                formData.append("fechaDoc", fechaDoc);
+                formData.append("fechaRecepcion", fechaRecepcion);
+                formData.append("idResponsable", idResponsable);
+                formData.append("idCorresponsable", idCorresponsable);
+                formData.append("fechaPlazo", fechaPlazo);
+                formData.append("documento", documento);
+                formData.append("idDocRelacionado", idDocRelacionado);
+                formData.append("numeroProceso", numeroProceso);
+
+                //agregando acciones
+                formData.append("conocimiento", conocimiento);
+                formData.append("coordinar", coordinar);
+                formData.append("conversar", conversar);
+                formData.append("archivo", archivo);
+                formData.append("responder", responder);
+                formData.append("revisar", revisar);
+                formData.append("urgente", urgente);
+
+                //barra de carga            
+                bloquearPantalla();
+                /*Ejecutamos la función ajax de jQuery*/
+                $.ajax({
+                    url: '../negocio/ingresoDocumento/procesarIngresarEntrada.php',
+                    type: 'POST',
+                    contentType: false,
+                    data: formData,
+                    processData: false,
+                    cache: false,
+                    success: function (r) {
+                        var res = $.parseJSON(r);
+                        if (res['exito'] == 1) {
+                            insertarAdjuntos('adjunto', res['idDocumento']);
+                            desbloquearPantalla();
+                            Toastify({
+                                text: "Documento Subido correctamente!",
+                                duration: 3000,
+                                close: true,
+                                gravity: "top",
+                                position: "right",
+                                backgroundColor: "#4fbe87", // Green color for success
+                            }).showToast();
+                        } else {
+                            insertarAdjuntos('adjunto', res['idDocumento']);
+                            desbloquearPantalla();
+                            Toastify({
+                                text: "Documento Subido",
+                                duration: 10000,
+                                close: true,
+                                gravity: "top",
+                                position: "right",
+                                backgroundColor: "#4fbe87", // Green color for success
+                            }).showToast();
+                            Toastify({
+                                text: "Advertencia: " + res['mensaje'],
+                                duration: 7000,
+                                close: true,
+                                gravity: "top",
+                                position: "right",
+                                backgroundColor: "#FF5F15", // Oragne color for warning
+                            }).showToast();
+                        }
+
+                        // Reset the form and file inputs
+                        $('#formIngresarEntrada')[0].reset();
+                    },
+                    error: function (xhr, status, error) {
+                        desbloquearPantalla();
+                        Toastify({
+                            text: "AJAX Error: " + error,
+                            duration: 3000,
+                            close: true,
+                            gravity: "top",
+                            position: "right",
+                            backgroundColor: "#e74c3c", // Red color for error
+                        }).showToast();
+
+                    }
+                });
+
+
+            }
+
+        }
+
+    });
+
+
+    $("#documento").change(function () {//limpiando input tipo file
+        $("#divDocumento").removeClass("has-error");
+        $("#documento-error").hide("fast");
+    });
+
+    //-----------------------------------//
+    // MODAL BUSQUEDA DOC RELACIONADO   //
+    //---------------------------------//
+
+    $("#btnBuscarDoc").click(function () {
+
+        var idContrato = $("#idContratoBuscar").val();
+        var numDoc = $("#numDocumentoBuscar").val();
+        var idNombreNumero = $("#idNombreNumero").val();
+        var materia = $("#materiaBuscar").val();
+
+        $.get("../negocio/ajax/buscarDocumentos.php", { "idContrato": idContrato, "numDoc": numDoc, "idNombreNumero": idNombreNumero, "materia": materia },
+            function (r) {
+                $(".resultadoAjax").html(r);
+            });
+    });
+
+
+
+    //-----------------------------------------//
+    //           INGRESAR SALIDA              //
+    //---------------------------------------//
+    $("#formIngresarSalida").validate({
+        rules: {
+            idSubContrato: {
+                required: true
+            },
+            numeroDoc: {
+                required: true,
+                maxlength: 50
+            },
+            remitente: {
+                required: true,
+                espacioBlanco: true,
+                maxlength: 100
+            },
+            destinatario: {
+                required: true,
+                espacioBlanco: true,
+                maxlength: 100
+            },
+            materia: {
+                required: true,
+                espacioBlanco: true
+            },
+            incluye: {
+                required: true,
+                espacioBlanco: true
+            },
+            documento: {
+                required: true
+            },
+            idTipoDoc: {
+                required: true
+            },
+            fechaDoc: {
+                required: true,
+                formatoFecha: true
+            },
+            fechaRecepcion: {
+                required: true,
+                formatoFecha: true
+            },
+            idEstadoDoc: {
+                required: true
+            }
+        },
+        messages: {
+            idSubContrato: {
+                required: "Por favor, seleccione un Sub-Contrato"
+            },
+            numeroDoc: {
+                required: "Por favor, Ingrese número de Documento",
+                maxlength: "Error, límite de caracteres excedido"
+            },
+            remitente: {
+                required: "Por favor, ingrese Remitente",
+                espacioBlanco: "Error, no rellene con espacios",
+                letterwithbasicpunc: "Error, ingrese letras solamente",
+                maxlength: "Error, límite de caracteres excedido"
+            },
+            destinatario: {
+                required: "Por favor, ingrese Destinatario",
+                espacioBlanco: "Error, no rellene con espacios",
+                letterwithbasicpunc: "Error, ingrese letras solamente",
+                maxlength: "Error, límite de caracteres excedido"
+            },
+            materia: {
+                required: "Por favor, ingrese Materia",
+                espacioBlanco: "Error, no rellene con espacios"
+            },
+            incluye: {
+                required: "Por favor, ingrese Destinatario",
+                espacioBlanco: "Error, no rellene con espacios",
+                maxlength: "Error, límite de caracteres excedido"
+            },
+            documento: {
+                required: "Por favor, seleccione Documento"
+            },
+            idTipoDoc: {
+                required: "Por favor, seleccione tipo de documento"
+            },
+            fechaDoc: {
+                required: "Por favor, seleccione fecha de documento",
+                formatoFecha: "Error, formato de fecha incorrecto"
+            },
+            fechaRecepcion: {
+                required: "Por favor, seleccione fecha de recepcion",
+                formatoFecha: "Error, formato de fecha incorrecto"
+            },
+            idEstadoDoc: {
+                required: "Por favor, seleccione un estado"
+            }
+        },
+        submitHandler: function () {
+
+            var idSubContrato = $("#idSubContrato").val();
+            var numeroDoc = $("#numeroDoc").val();
+            var numeroProceso = $("#numeroProceso").val();
+            var remitente = $("#remitente").val();
+            var destinatario = $("#destinatario").val();
+            var materia = $("#materia").val();
+            var antecedente = $("#antecedente").val();
+            var incluye = $("#incluye").val();
+            var comentarios = $("#comentarios").val();
+            var idTipoDoc = $("#idTipoDoc").val();
+            var fechaDoc = $("#fechaDoc").val();
+            var fechaRecepcion = $("#fechaRecepcion").val();
+            var fechaPlazo = $("#fechaPlazo").val();
+            var idResponsable = $("#idResponsable").val();
+            var idEstadoDoc = $("#idEstadoDoc").val();
+            var documento = $("#documento")[0].files[0];
+            var idDocRelacionado = $("#idDocRelacionado").val();
+
+
+            //FORMDATA
+            var formData = new FormData();//instanceando objeto formadata para enviode datos y archivos 
+
+            //agregando datos
+            formData.append("idSubContrato", idSubContrato);
+            formData.append("numeroDoc", numeroDoc);
+            formData.append("numeroProceso", numeroProceso);
+            formData.append("remitente", remitente);
+            formData.append("destinatario", destinatario);
+            formData.append("materia", materia);
+            formData.append("antecedente", antecedente);
+            formData.append("incluye", incluye);
+            formData.append("comentarios", comentarios);
+            formData.append("idTipoDoc", idTipoDoc);
+            formData.append("fechaDoc", fechaDoc);
+            formData.append("fechaRecepcion", fechaRecepcion);
+            formData.append("fechaPlazo", fechaPlazo);
+            formData.append("idResponsable", idResponsable);
+            formData.append("idEstadoDoc", idEstadoDoc);
+            formData.append("documento", documento);
+            formData.append("idDocRelacionado", idDocRelacionado);
+
+            //Bloqueando pantalla
+            bloquearPantalla();
+            /*Ejecutamos la función ajax de jQuery*/
+            $.ajax({
+                url: '../negocio/ingresoDocumento/procesarIngresarSalida.php', //Url a donde la enviaremos
+                type: 'POST', //Metodo que usaremos
+                contentType: false, //Debe estar en false para que pase el objeto sin procesar
+                data: formData, //Le pasamos el objeto que creamos con los archivos
+                processData: false, //Debe estar en false para que JQuery no procese los datos a enviar
+                cache: false,
+                success: function (r) {
+
+                    var res = $.parseJSON(r);//obteniendo objeto json desde php
+
+                    if (res['exito'] == 1) {
+                        //insertando archivos adjuntos
+                        insertarAdjuntos('adjunto', res['idDocumento']);
+
+                    } else {
+
+                        //desbloqueando pantalla
+                        desbloquearPantalla();
+                        //Mostrando mensajes de error
+                        $(".mensajeExito").hide("fast");
+                        $(".mensajeError").show("fast");
+                    }
+                }
+            });
+        }
+
+    });
+
+
+    //-----------------------------------//
+    //    CARGA MASIVA DE REGISTROS      //
+    //-----------------------------------//
+
+    /*
+        $("#formCargaMasiva").validate({
+            rules: {
+                idSubContrato: {
+                    required: true
+                },
+                idTipoDoc: {
+                    required: true
+                },
+                idFlujoT: {
+                    required: true
+                },
+                filas: {
+                    required: true,
+                    number: true,
+                    min: 1
+                },
+                idEstadoDoc: {
+                    required: true
+                },
+                archivoExcel: {
+                    required: true
+                },
+                idResponsable: {
+                    required: true
+                }
+    
+            },
+            messages: {
+                idSubContrato: {
+                    required: "Por favor, seleccione Sub-Contrato"
+                },
+                idTipoDoc: {
+                    required: "Por favor, seleccione Tipo de Documento"
+                },
+                idFlujoT: {
+                    required: "Por favor, seleccione Flujo"
+                },
+                filas: {
+                    required: "Por favor, ingrese Filas",
+                    number: "Error, ingrese números solamente",
+                    min: "Error, ingrese número superior o igual a 1"
+                },
+                idEstadoDoc: {
+                    required: "Por favor, seleccione Estado de Documento"
+                },
+                archivoExcel: {
+                    required: "Por favor, seleccione Archivo"
+                },
+                idResponsable: {
+                    required: "Por favor, seleccione Responsable"
+                }
+            },
+            submitHandler: function () {
+    
+                var idSubContrato = $("#idSubContrato option:selected").val();
+                var idTipoDoc = $("#idTipoDoc option:selected").val();
+                var idFlujo = $("#idFlujoT option:selected").val();
+                var filas = $("#filas").val();
+                var idEstadoDoc = $("#idEstadoDoc option:selected").val();
+                var idResponsable = $("#idResponsable option:selected").val();
+                var archivoExcel = $("#archivoExcel")[0].files[0];
+    
+                //bloqueo de pantalla
+                bloquearPantalla();
+                
+                $.post("../negocio/ingresoDocumento/procesarCargaMasiva.php",{id:2,archivoExcel:archivoExcel},function(r){
+                    console.log("entre validar");
+                    if (r = "correcto") {
+                        console.log("validar es correcto");
+                        archivoExcel = $("#archivoExcel")[0].files[0];
+    
+                        var formData = new FormData();
+                        formData.append("id", 1);
+                        formData.append("idSubContrato", idSubContrato);
+                        formData.append("idTipoDoc", idTipoDoc);
+                        formData.append("idFlujo", idFlujo);
+                        formData.append("filas", filas);
+                        formData.append("idEstadoDoc", idEstadoDoc);
+                        formData.append("idResponsable", idResponsable);
+                        formData.append("archivoExcel", archivoExcel);
+                        $.ajax({
+                            url: '../negocio/ingresoDocumento/procesarCargaMasiva.php', //Url a donde la enviaremos
+                            type: 'POST', //Metodo que usaremos
+                            contentType: false, //Debe estar en false para que pase el objeto sin procesar
+                            data: formData, //Le pasamos el objeto que creamos con los archivos
+                            processData: false, //Debe estar en false para que JQuery no procese los datos a enviar
+                            cache: false,
+                            success: function (r) {
+                                console.log("entre insertar");
+                                $(".gifCarga").hide("fast");
+                                $("#tituloEspera").hide("fast");
+    
+                                if (r == '1') {
+    
+                                    $("#formCargaMasiva").each(function () {
+                                        this.reset();
+                                    });
+    
+                                    $(".mensajeError").hide("fast");
+                                    $(".mensajeExito").show("fast");
+    
+                                    //Desbloquear pantalla  
+                                    desbloquearPantalla();
+    
+                                } else {
+    
+                                    //Desbloquear pantalla  
+                                    desbloquearPantalla();
+    
+                                    $(".mensajeExito").hide("fast");
+                                    $(".mensajeError").show("fast");
+    
+                                }
+    
+                            }
+    
+                        });
+                    }else{
+                        console.log("error validar");
+                        alert(r);
+                        desbloquearPantalla();
+                    }
+                });
+    
+    
+            }
+        });
+    */
+    //BETA DE CARGA MASIVA
+    $("#formCargaMasiva").validate({
+        rules: {
+            idSubContrato: {
+                required: true
+            },
+            idTipoDoc: {
+                required: true
+            },
+            idFlujoT: {
+                required: true
+            },
+            filas: {
+                required: true,
+                number: true,
+                min: 1
+            },
+            idEstadoDoc: {
+                required: true
+            },
+            archivoExcel: {
+                required: true
+            },
+            idResponsable: {
+                required: true
+            }
+
+        },
+        messages: {
+            idSubContrato: {
+                required: "Por favor, seleccione Sub-Contrato"
+            },
+            idTipoDoc: {
+                required: "Por favor, seleccione Tipo de Documento"
+            },
+            idFlujoT: {
+                required: "Por favor, seleccione Flujo"
+            },
+            filas: {
+                required: "Por favor, ingrese Filas",
+                number: "Error, ingrese números solamente",
+                min: "Error, ingrese número superior o igual a 1"
+            },
+            idEstadoDoc: {
+                required: "Por favor, seleccione Estado de Documento"
+            },
+            archivoExcel: {
+                required: "Por favor, seleccione Archivo"
+            },
+            idResponsable: {
+                required: "Por favor, seleccione Responsable"
+            }
+        },
+        submitHandler: function () {
+
+            var idSubContrato = $("#idSubContrato option:selected").val();
+            var idTipoDoc = $("#idTipoDoc option:selected").val();
+            var idFlujo = $("#idFlujoT option:selected").val();
+            var filas = $("#filas").val();
+            var idEstadoDoc = $("#idEstadoDoc option:selected").val();
+            var idResponsable = $("#idResponsable option:selected").val();
+            var archivoExcel = $("#archivoExcel")[0].files[0];
+
+            //bloqueo de pantalla
+
+
+            var validar = new FormData();
+            validar.append("id", 2);
+            validar.append("archivoExcel", archivoExcel);
+
+
+            $.ajax({
+                url: '../negocio/ingresoDocumento/procesarCargaMasiva.php', //Url a donde la enviaremos
+                type: 'POST', //Metodo que usaremos
+                contentType: false, //Debe estar en false para que pase el objeto sin procesar
+                data: validar, //Le pasamos el objeto que creamos con los archivos
+                processData: false, //Debe estar en false para que JQuery no procese los datos a enviar
+                cache: false,
+                success: function (r) {
+
+                    if (r == "correcto") {
+                        bloquearPantalla();
+                        var formData = new FormData();
+                        formData.append("id", 1);
+                        formData.append("idSubContrato", idSubContrato);
+                        formData.append("idTipoDoc", idTipoDoc);
+                        formData.append("idFlujo", idFlujo);
+                        formData.append("filas", filas);
+                        formData.append("idEstadoDoc", idEstadoDoc);
+                        formData.append("idResponsable", idResponsable);
+                        formData.append("archivoExcel", archivoExcel);
+                        var files = $("#cargaDocumentos")[0].files;
+                        for (var i = 0; i < files.length; i++) {
+                            formData.append('cargaDocumentos[]', files[i]);
+                        }
+                        $.ajax({
+                            url: '../negocio/ingresoDocumento/procesarCargaMasiva.php', //Url a donde la enviaremos
+                            type: 'POST', //Metodo que usaremos
+                            contentType: false, //Debe estar en false para que pase el objeto sin procesar
+                            data: formData, //Le pasamos el objeto que creamos con los archivos
+                            processData: false, //Debe estar en false para que JQuery no procese los datos a enviar
+                            cache: false,
+                            success: function (r) {
+                                $(".gifCarga").hide("fast");
+                                $("#tituloEspera").hide("fast");
+
+                                if (r == '1') {
+
+                                    $("#formCargaMasiva").each(function () {
+                                        this.reset();
+                                    });
+
+                                    $(".mensajeError").hide("fast");
+                                    $(".mensajeExito").show("fast");
+
+                                    //Desbloquear pantalla  
+                                    desbloquearPantalla();
+
+                                } else {
+
+                                    //Desbloquear pantalla  
+                                    desbloquearPantalla();
+
+                                    $(".mensajeExito").hide("fast");
+                                    $(".mensajeError").show("fast");
+
+                                }
+
+                            }
+
+                        });
+                    } else {
+                        desbloquearPantalla();                        
+                        Toastify({
+                            text: "Error al solicitud incorrecta: " + r ,
+                            duration: 5000,
+                            close: true,
+                            gravity: "top",
+                            position: "right",
+                            backgroundColor: "#FF0000",
+                            stopOnFocus: true
+                        }).showToast();
+                    }
+                },
+                error: function (jqXHR, textStatus, errorThrown) {
+                    desbloquearPantalla();
+                    Toastify({
+                        text: "Error al procesar la solicitud: " + textStatus + ", " + errorThrown,
+                        duration: 5000,
+                        close: true,
+                        gravity: "top",
+                        position: "right",
+                        backgroundColor: "#FF0000",
+                        stopOnFocus: true
+                    }).showToast();
+                }
+            });
+
+
+        }
+    });
+
+
+
+
+    //////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////
+    //LIMPIADO EL INPUT FILE
+    $("#archivoExcel").change(function () {
+        $("#divArchivo").removeClass("has-error");
+        $("#archivoExcel-error").hide("fast");
+    });
+
+
+    $("#formCargarArchivosRestantes").validate({
+        rules: {
+            archivo: {
+                required: true
+            }
+        },
+        messages: {
+            archivo: {
+                required: "Por favor, seleccione Archivo"
+            }
+        },
+        submitHandler: function () {
+
+            var archivo = $("#archivo")[0].files[0];
+            var idDocumento = $("#idDocModal").val();
+            var formData = new FormData();
+
+            formData.append("archivo", archivo);
+            formData.append("idDocumento", idDocumento);
+            formData.append("flag", 1);
+
+            bloquearPantalla();//bloquear pantalla
+
+            $.ajax({
+                url: '../negocio/ingresoDocumento/procesarCargarArchivosRestantes.php', //Url a donde la enviaremos
+                type: 'POST', //Metodo que usaremos
+                contentType: false, //Debe estar en false para que pase el objeto sin procesar
+                data: formData, //Le pasamos el objeto que creamos con los archivos
+                processData: false, //Debe estar en false para que JQuery no procese los datos a enviar
+                cache: false,
+                success: function (r) {
+
+                    if (r == '1') {
+
+                        insertarAdjuntos('adjunto', idDocumento);
+
+                        $.get("ingresoDocumentos/archivosRestantes_AJAX.php", function (r) {
+                            $.getScript("funcionesJS/ingresarDocumentos/funcionesIngresarDocumentos.js");
+                            $(".divAjax").html(r);
+                        });
+
+                        $("#formCargarArchivosRestantes").each(function () {
+                            this.reset();
+                        });
+                        $("#archivo").prop('disabled', true);
+                        $("#adjunto").prop('disabled', true);
+
+                        $("#btnSubirArchivos").prop('disabled', true);
+
+                        $("#tablaDocsRelacionados").empty();
+                        $(".mensajeError").hide("fast");
+                        $(".mensajeExito").show("fast");
+
+                        //desbloquear pantalla
+                        desbloquearPantalla();
+
+                    } else {
+                        //desbloquear pantalla
+                        desbloquearPantalla();
+
+                        $(".mensajeExito").hide("fast");
+                        $(".mensajeError").show("fast");
+
+                    }
+
+                }
+
+            });
+
+        }
+
+    });
+
+
+
+    $("#archivo").change(function () {
+        $("#divArchivoModal").removeClass("has-error");
+        $("#archivo-error").hide("fast");
+    });
+
+    //LIMPIANDO MODAL
+
+
+    $("#modalCargarArchivo").on('hidden.bs.modal', function () {//limpiando el modal al perder el focus
+        $(".help-block").hide("fast");
+        $(".form-group").removeClass("has-error");
+        $(".mensajeError").hide("fast");
+        $(".mensajeExito").hide("fast");
+        $("#listadoAdjunto").empty();
+        $("#formCargarArchivosRestantes").each(function () {
+            this.reset();
+        });
+
+        $("#archivo").removeAttr('disabled');
+        $("#adjunto").removeAttr('disabled');
+        $("#tablaDocsRelacionados").empty();
+        $("#btnSubirArchivos").removeAttr('disabled');
+
+        $.get("../negocio/eliminarSessionDocumentos.php");
+
+
+    });
+
+
+    $("#modalAgregarEntidad").on('hidden.bs.modal', function () {//limpiando el modal al perder el focus
+        $(".help-block").hide("fast");
+        $(".form-group").removeClass("has-error");
+        $(".mensajeErrorModal").hide("fast");
+        $(".mensajeExitoModal").hide("fast");
+
+        $("#formAgregarEntidad").each(function () {
+            this.reset();
+        });
+
+        $("#divIngresarCargo").hide("fast");
+
+    });
+
+    //------------------------------//
+    //INGRESO DE ENTIDADES POR MODAL//
+    //------------------------------//
+    $("#formAgregarEntidad").validate({
+        rules: {
+            nombreEntidad: {
+                required: true,
+                maxlength: 20,
+                letterswithbasicpunc: true,
+                espacioBlanco: true
+            },
+            apellidoEntidad: {
+                required: true,
+                maxlength: 30,
+                letterswithbasicpunc: true,
+                espacioBlanco: true
+            },
+            idCargo: {
+                required: true
+            }
+        },
+        messages: {
+            nombreEntidad: {
+                required: "Por favor, ingrese Nombre",
+                maxlength: "Error, límite de caracteres excedido (20)",
+                letterswithbasicpunc: "Error, ingrese letras solamente"
+            },
+            apellidoEntidad: {
+                required: "Por favor, ingrese Apellido",
+                maxlength: "Error, límite de caracteres excedido (30)",
+                letterswithbasicpunc: "Error, ingrese letras solamente"
+            },
+            idCargo: {
+                required: "Por favor, seleccione cargo"
+            }
+        },
+        submitHandler: function () {
+
+            var nombreEntidad = $("#nombreEntidad").val();
+            var apellidoEntidad = $("#apellidoEntidad").val();
+            var idCargo = $("#idCargo").val();
+            var idTipoEntidad = $("#idTipoEntidad").val();
+
+
+            //ajax
+            $.post("../negocio/configuracion/entidades/procesarAdmEntidades.php", {
+                "nombreEntidad": nombreEntidad, "apellidoEntidad": apellidoEntidad,
+                "idCargo": idCargo, "idTipoEntidad": idTipoEntidad, "flag": 1
+            }, function (r) {
+
+                if (r != '-1') {
+                    $("#formAgregarEntidad").each(function () {
+                        this.reset();
+                    });
+
+                    $(".mensajeExitoModal").show("fast");
+
+                    switch (idTipoEntidad) {
+                        case '1'://INSERTANDO REMITENTE EN EL SELECT
+
+                            $.get("../negocio/ajax/obtenerCargoAjax.php", { "idCargo": idCargo }, function (e) {
+                                $('#remitente').append('<option value="' + r + '">' + nombreEntidad + ' ' + apellidoEntidad + ' (' + e + ')</option>');//insertando nueva entidad en el select
+
+                            });//OBTENIEDNO NOMBRE DEL CARGO
+                            break;
+
+
+                        case '2'://INSERTANDO DESTINATARIO EN EL SELECT
+
+                            $.get("../negocio/ajax/obtenerCargoAjax.php", { "idCargo": idCargo }, function (e) {
+                                $('#destinatario').append('<option value="' + r + '">' + nombreEntidad + ' ' + apellidoEntidad + ' (' + e + ')</option>');//insertando nueva entidad en el select
+
+                            });//OBTENIEDNO NOMBRE DEL CARGO
+                            break;
+                    }
+
+                } else {
+                    $(".mensajeErrorModal").show("fast");
+                }
+            });
+
+        }
+
+    });
+
+
+
+    //-----------------------------------//
+    //      ACTUALIZAR DOCUMENTO        //
+    //---------------------------------//
+
+    $("#formActualizarDocumentoBuscador").validate({
+        rules: {
+            idSubContrato: {
+                required: true
+            },
+            numeroDoc: {
+                required: true
+            },
+            numeroProceso: {
+                required: true
+            },
+            remitente: {
+                required: true
+            },
+            destinatario: {
+                required: true
+            },
+            materia: {
+                required: true
+            },
+            incluye: {
+                required: true
+            },
+            idTipoDoc: {
+                required: true
+            },
+            fechaDoc: {
+                required: true
+            },
+            fechaRecepcion: {
+                required: true
+            },
+            fechaPlazo: {
+                required: true
+            }
+
+        },
+        messages: {
+            idSubContrato: {
+                required: "Por favor, seleccione Sub-Contrato"
+            },
+            numeroDoc: {
+                required: "Por favor, ingrese número de documento"
+            },
+            numeroProceso: {
+                required: "Por favor, ingrese número de proceso"
+            },
+            remitente: {
+                required: "Por favor, ingrese remitente"
+            },
+            destinatario: {
+                required: "Por favor, ingrese destinatario"
+            },
+            materia: {
+                required: "Por favor, ingrese materia"
+            },
+            incluye: {
+                required: "Por favor, ingrese inclusión"
+            },
+            idTipoDoc: {
+                required: "Por favor, seleccione tipo de documento"
+            },
+            fechaDoc: {
+                required: "Por favor, ingrese fecha de documento"
+            },
+            fechaRecepcion: {
+                required: "Por favor, ingrese fecha de recepción"
+            },
+            fechaPlazo: {
+                required: "Por favor, ingrese fecha de plazo"
+            }
+        },
+        submitHandler: function () {
+
+            var idSubContrato = $("#idSubContrato").val();
+            var idDocumento = $("#idDocumento").val();
+            var numeroDoc = $("#numeroDoc").val();
+            var numeroProceso = $("#numeroProceso").val();
+            var numeroProvidencia = $("#numeroProv").val();
+            var remitente = $("#remitente").val();
+            var destinatario = $("#destinatario").val();
+            var materia = $("#materia").val();
+            var incluye = $("#incluye").val();
+            var comentarios = $("#comentarios").val();
+            var idTipoDoc = $("#idTipoDoc").val();
+            var fechaDoc = $("#fechaDoc").val();
+            var fechaRecepcion = $("#fechaRecepcion").val();
+            var fechaPlazo = $("#fechaPlazo").val();
+            var idResponsable = $("#idResponsable").val();
+            var idEstado = $("#idEstado").val();
+
+            //ACCIONES
+
+            var conocimiento = $("#conocimiento").is(":checked") ? $("#conocimiento").val() : "";
+            var coordinar = $("#coordinar").is(":checked") ? $("#coordinar").val() : "";
+            var conversar = $("#conversar").is(":checked") ? $("#conversar").val() : "";
+            var archivo = $("#archivo").is(":checked") ? $("#archivo").val() : "";
+            var responder = $("#responder").is(":checked") ? $("#responder").val() : "";
+            var revisar = $("#revisar").is(":checked") ? $("#revisar").val() : "";
+            var urgente = $("#urgente").is(":checked") ? $("#urgente").val() : "";
+            //
+
+            var flag = $("#flag").val();
+
+            var archivoDoc = $("#archivoDoc")[0].files[0];
+
+            var formData = new FormData();
+
+            formData.append("idSubContrato", idSubContrato);
+            formData.append("idDocumento", idDocumento);
+            formData.append("numeroDoc", numeroDoc);
+            formData.append("numeroProceso", numeroProceso);
+            formData.append("numeroProvidencia", numeroProvidencia);
+            formData.append("remitente", remitente);
+            formData.append("destinatario", destinatario);
+            formData.append("materia", materia);
+            formData.append("incluye", incluye);
+            formData.append("comentarios", comentarios);
+            formData.append("idTipoDoc", idTipoDoc);
+            formData.append("fechaDoc", fechaDoc);
+            formData.append("fechaRecepcion", fechaRecepcion);
+            formData.append("fechaPlazo", fechaPlazo);
+            formData.append("idResponsable", idResponsable);
+            formData.append("idEstado", idEstado);
+            formData.append("archivoDoc", archivoDoc);
+            formData.append("flag", flag);
+            //acciones
+            formData.append("conocimiento", conocimiento);
+            formData.append("coordinar", coordinar);
+            formData.append("conversar", conversar);
+            formData.append("archivo", archivo);
+            formData.append("responder", responder);
+            formData.append("revisar", revisar);
+            formData.append("urgente", urgente);
+
+            bloquearPantalla();
+
+            $.ajax({
+                url: '../../negocio/inicio/procesarActualizarDocumento.php', //Url a donde la enviaremos
+                type: 'POST', //Metodo que usaremos              
+                data: formData, //Le pasamos el objeto que creamos con los archivos
+                contentType: false,
+                processData: false,
+                cache: false,
+                success: function (r) {
+
+                    var res = $.parseJSON(r);
+
+                    if (res['exito'] == 1) {
+
+                        insertarAdjuntos('adjunto', res['idDocumento']);//insertando adjunto, paso por parametro el nombre del input que tiene los adjuntos, junto com el id del documento
+
+                        $(".mensajeError").hide("fast");
+                        $(".mensajeExito").show("fast");
+
+                        $("html, body").animate({ scrollTop: 300 }, '5000');
+
+                        //desbloquear pantalla
+                        desbloquearPantalla();
+
+                    } else {
+
+                        //desbloquear pantalla
+                        desbloquearPantalla();
+
+                        $(".mensajeExito").hide("fast");
+                        $(".mensajeError").show("fast");
+                    }
+                    document.location.reload();
+                }
+            });
+        }
+    });
+
+
+    $("#btnDocRelacionado").click(function () {
+        $("#divSeleccionarDocRel").show("fast");
+    });
+
+    $("#btnCerrarBuscarDoc").click(function () {
+        $("#numDocumentoBuscar").val("");
+        $("#materiaBuscar").val("");
+        $("#divSeleccionarDocRel").hide("fast");
+    });
+});
+function detalleAdjuntos() {
+
+    var archivos = document.getElementById("adjunto");//Creamos un objeto con el elemento que contiene los archivos: el campo input file, que tiene el id = 'archivos'
+    var archivo = archivos.files; //Obtenemos los archivos seleccionados en el input
+    //Creamos una instancia del Objeto FormDara.
+    //Creamos una instancia del Objeto FormDara.
+    var listado = "<table class='table table-striped'>";
+    /* Como son multiples archivos creamos un ciclo for que recorra el arreglo de los archivos seleccionados en el input
+     Este y añadimos cada elemento al formulario FormData en forma de arreglo, utilizando la variable i (autoincremental) como 
+     indice para cada archivo, si no hacemos esto, los valores del arreglo se sobre escriben*/
+    for (i = 0; i < archivo.length; i++) {
+        var arch = archivo[i];
+        listado += "<tr><td>" + arch.name + "</td></tr>";
+    }
+
+    listado += "</table>";
+    $("#listadoAdjunto").html(listado);
+
+
+}
+
+function buscarArchivos() {
+    event.preventDefault();
+    swal({//SETEANDO PLUGIN SWEET ALERT
+        title: '¿Está seguro que desea reemplazar los archivos? Estos seran eliminados permanentemente',
+        type: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#3085d6',
+        cancelButtonColor: '#d33',
+        confirmButtonText: 'Si, modificar',
+        cancelButtonText: 'No, cancelar',
+        confirmButtonClass: 'btn btn-success',
+        cancelButtonClass: 'btn btn-danger',
+        buttonsStyling: false
+    }).then(function () {
+        var fileInput = document.getElementById("adjunto");
+        fileInput.click();
+    }, function (dismiss) {//CANCELAR ACCION
+
+        if (dismiss === 'cancel') {
+            swal(
+                'Cancelado',
+                'Los archivos no han sido modificados',
+                'error'
+            );
+        }
+    });
+
+
+
+}
+
+function insertarAdjuntos(idAdjunto, idDocumento) {
+
+    var archivos = document.getElementById(idAdjunto);//Creamos un objeto con el elemento que contiene los archivos: el campo input file, que tiene el id = 'archivos'
+    var archivo = archivos.files; //Obtenemos los archivos seleccionados en el imput
+    //Creamos una instancia del Objeto FormDara.
+    var archivos = new FormData();
+    /* Como son multiples archivos creamos un ciclo for que recorra el arreglo de los archivos seleccionados en el input
+     Este y añadimos cada elemento al formulario FormData en forma de arreglo, utilizando la variable i (autoincremental) como 
+     indice para cada archivo, si no hacemos esto, los valores del arreglo se sobre escriben*/
+
+    for (i = 0; i < archivo.length; i++) {
+
+        archivos.append('archivo' + i, archivo[i]); //Añadimos cada archivo a el arreglo con un indice direfente
+    }
+
+    archivos.append("idDocumento", idDocumento);
+
+    /*Ejecutamos la función ajax de jQuery*/
+    $.ajax({
+        url: '../negocio/procesarIngresarAdjuntos.php', //Url a donde la enviaremos
+        type: 'POST', //Metodo que usaremos
+        contentType: false, //Debe estar en false para que pase el objeto sin procesar
+        data: archivos, //Le pasamos el objeto que creamos con los archivos
+        processData: false, //Debe estar en false para que JQuery no procese los datos a enviar
+        cache: false,
+        success: function () {
+
+            $("#listadoAdjunto").empty();
+
+            //Mostrando mensaje de exito
+            $(".mensajeError").hide("fast");
+            $(".mensajeExito").show("fast");
+
+            $("#formIngresarEntrada").each(function () {//Limpiando el formulario
+                this.reset();
+            });
+            $("#formIngresarSalida").each(function () {//Limpiando el formulario
+                this.reset();
+            });
+            //listando divs llenados con ajax
+            $("#listadoAdjunto").empty();
+            $("#divIdContrato").hide("fast");
+            $("#tablaDocsRelacionados").empty();
+
+            //Desbloqueando pantalla
+            desbloquearPantalla();
+
+        }
+    });
+
+}
+
+//-----------------------------------//
+//      ELIMINAR SEGUIMIENTO           //
+//---------------------------------//
+function eliminarSeguimiento(idSeg, element) {
+    var data = {
+        "idSeg": idSeg,
+        "flagDoc": 5
+    }
+
+    swal({//SETEANDO PLUGIN SWEET ALERT
+        title: '¡Está a punto de eliminar un registro del sistema!',
+        type: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#3085d6',
+        cancelButtonColor: '#d33',
+        confirmButtonText: 'Si, eliminar',
+        cancelButtonText: 'No, cancelar',
+        confirmButtonClass: 'btn btn-success',
+        cancelButtonClass: 'btn btn-danger',
+        buttonsStyling: false
+    }).then(function () {
+        $.ajax({
+            data: data,
+            url: '../../negocio/inicio/procesarActualizarDocumento.php',
+            type: 'post',
+            success: function (data) {
+                console.log(data);
+                if (data == 0) {
+                    // Codigo a ejecutar cuando la query fue exitosa y devuelve 1 (notar que tambien devuelve 1 cuando no elimina nada pero la query fue exitosa)
+                    swal({
+                        title: "Éxito",
+                        text: "Registro eliminado",
+                        icon: "success",
+                        button: "Aceptar",
+                    });
+                    $(element).closest("tr").remove();
+                } else {
+                    // Codigo a ejecutar cuando la query falló y devuelve -1
+                    swal({
+                        title: "Error",
+                        text: "Algo falló, el registro no ha sido eliminado",
+                        icon: "error",
+                        button: "Aceptar",
+                    });
+                }
+
+
+                console.log(data);
+
+                // Perform any additional actions after the record is successfully deleted
+            },
+            error: function (xhr, status, error) {
+                console.error(xhr.responseText);
+            }
+        });
+    }, function (dismiss) {//CANCELAR ACCION
+
+        if (dismiss === 'cancel') {
+            swal(
+                'Cancelado',
+                'Los registros están intactos',
+                'error'
+            );
+        }
+    });
+
+
+}
+
+//REVISAR ESTE METODO
+
+function relacionarDocumento(idDocRelacionado, idFila) {
+
+    $.get("../negocio/ingresoDocumento/procesarRelacionarDocumento.php", { "idDocRelacionado": idDocRelacionado }, function (r) {
+
+        $("#" + idFila + "").hide("fast");
+        //metodo auxiliar, ya q en un modal el codigo de arriba no funka en inicio/detalledocumento
+        $("table").find("#" + idFila + "").hide("fast");
+        relacionarDocumentoDetalle(r, 1);
+
+    });
+
+}
+
+
+function cargarIdDocModalArchivos(idDoc, numDoc, numProvidencia, numProceso) {
+
+    $("#idDocModal").val(idDoc);
+    $("#numDocModal").text("N° Documento: " + numDoc);
+    $("#numProvidenciaModal").text("N° Providencia: " + numProvidencia);
+    $("#numProcesoModal").text("N° Proceso: " + numProceso);
+
+
+}
+
+function eliminarRegistro(idDocumento, idFila) {
+
+    swal({//SETEANDO PLUGIN SWEET ALERT
+        title: '¿Está seguro que desea eliminar el registro??',
+        type: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#3085d6',
+        cancelButtonColor: '#d33',
+        confirmButtonText: 'Si, eliminar',
+        cancelButtonText: 'No, cancelar',
+        confirmButtonClass: 'btn btn-success',
+        cancelButtonClass: 'btn btn-danger',
+        buttonsStyling: false
+    }).then(function () {
+
+        //ejecutando el metodo
+        $.post("../negocio/ingresoDocumento/procesarCargarArchivosRestantes.php", { "idDocumento": idDocumento, "flag": 2 },
+            function (r) {
+
+                if (r == '1') {
+                    $("#" + idFila + "").hide();
+                    swal(
+                        '¡Registro Eliminado Exitosamente!',
+                        '',
+                        'success'
+                    );
+
+
+                } else {
+                    swal(
+                        'Error',
+                        'No se ha podido eliminar el Registro',
+                        'error'
+                    );
+                }
+            });
+    }, function (dismiss) {//CANCELAR ACCION
+
+        if (dismiss === 'cancel') {
+            swal(
+                'Cancelado',
+                'El registro no fue eliminado',
+                'error'
+            );
+        }
+    });
+}
+
+function bloquearPantalla() {
+    $.blockUI(
+        {
+            message: '<img src="media/30.gif" /><h2> Procesando, por favor espere.</h2>',
+            css: {
+                border: 'none',
+                padding: '15px',
+                backgroundColor: '#000',
+                '-webkit-border-radius': '10px',
+                '-moz-border-radius': '10px',
+                opacity: .5,
+                color: '#fff'
+
+            }
+        }
+    );
+
+    $("#sideNav a").addClass("bloqueo-link");
+}
+
+function desbloquearPantalla() {
+    $.unblockUI();
+    $("#sideNav a").removeClass("bloqueo-link");
+}
+
+function cargarModalAgregarEntidad(tipoEntidad) {
+
+    switch (tipoEntidad) {
+
+        case 1://ASIGNANDO VALORES SI LA ENTIDAD ES REMITENTE
+            $("#idTipoEntidad").val("1");
+            $("#tituloTipoEntidad").text("Agregar Remitente");
+
+            break;
+
+        case 2://ASIGNANDO VALORES SI LA ENTIDAD ES DESTINATARIO
+            $("#idTipoEntidad").val("2");
+            $("#tituloTipoEntidad").text("Agregar Destinatario");
+
+            break;
+    }
+}
+
+
+function eliminarDocRelacionadoSession(idDocRel, flag) {
+
+    var flagDoc = $("#" + flag + "").val();
+    $.get("../negocio/ingresoDocumento/procesarGestionarRelacionDocumentos.php", { "idDocRelacionado": idDocRel, "flagDoc": flagDoc }, function (r) {
+
+        $("#tablaDocsRelacionados").html(r);
+        $("#flagCargaArchivosSession").val(flagDoc);
+    });
+}
+
+
+// Get all the textarea elements with the class 'sanitize-input'
+const textareas = document.querySelectorAll('.sanitize-input');
+
+// Add an event listener to each textarea element
+textareas.forEach(textarea => {
+    textarea.addEventListener('input', sanitizeInput);
+});
+
+function sanitizeInput(event) {
+    const textarea = event.target;
+    let sanitizedText = textarea.value;
+
+    // Remove single quotes
+    sanitizedText = sanitizedText.replace(/'/g, "");
+
+    // Remove double quotes
+    sanitizedText = sanitizedText.replace(/"/g, "");
+
+    // Update the textarea value with the sanitized text
+    textarea.value = sanitizedText;
+}

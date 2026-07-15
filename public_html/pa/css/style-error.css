@@ -1,0 +1,15 @@
+#video-error{
+    margin:0 auto;
+    margin-top: 15%;
+}
+
+body{
+    background-image: url('../media/error-2.jpg');
+    background-size: 100%;
+    background-attachment:fixed;  
+    -webkit-background-size:cover;
+    -moz-background-size:cover;
+    -o-background-size:cover;
+    background-size:cover;
+    background-position:center;
+}
