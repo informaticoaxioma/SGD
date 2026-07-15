@@ -190,18 +190,25 @@ if ($_POST) {
 
         if ($exito >= 1) {
             $controllerCorresponsable = new CorresponsableController();
+            $corresponsables = [];
 
-            // Assuming $_POST['idCoresponsable'] contains an array of user IDs
             if (isset($_POST['idCorresponsable'])) {
-                $idCorresponsable = explode(',', $_POST['idCorresponsable']);
-                foreach ($idCorresponsable as $idUsuarioCorresponsable) {
-                    $datos = array(
-                        'id_corresponsable_doc' => 0,
-                        'id_documento' => $idDocumento, // Use the ID of the newly created documento
-                        'id_usuario_corresponsable' => $idUsuarioCorresponsable,
-                    );
+                $corresponsables = is_array($_POST['idCorresponsable'])
+                    ? $_POST['idCorresponsable']
+                    : array_filter(array_map('trim', explode(',', $_POST['idCorresponsable'])));
+            }
 
-                    $insercionCorresponsable = $controllerCorresponsable->set($datos);
+            $insercionCorresponsable = 0;
+            foreach ($corresponsables as $idUsuarioCorresponsable) {
+                $datos = array(
+                    'id_corresponsable_doc' => 0,
+                    'id_documento' => $idDocumento,
+                    'id_usuario_corresponsable' => $idUsuarioCorresponsable,
+                );
+
+                $resultadoInsert = $controllerCorresponsable->set($datos);
+                if ($resultadoInsert == 1) {
+                    $insercionCorresponsable = 1;
                 }
             }
 
@@ -278,8 +285,15 @@ if ($_POST) {
         }
 
         // Send emails to the corresponsables
-        if (!empty($_POST['idCorresponsable']) && is_array($_POST['idCorresponsable'])) {
-            foreach ($_POST['idCorresponsable'] as $idUsuarioCorresponsable) {
+        $corresponsables = [];
+        if (isset($_POST['idCorresponsable'])) {
+            $corresponsables = is_array($_POST['idCorresponsable'])
+                ? $_POST['idCorresponsable']
+                : array_filter(array_map('trim', explode(',', $_POST['idCorresponsable'])));
+        }
+
+        if (!empty($corresponsables)) {
+            foreach ($corresponsables as $idUsuarioCorresponsable) {
                 try {
                     // Get the corresponsable user details using their ID
                     $corresponsable = $serviceUsuario->getUsuarioPorId($idUsuarioCorresponsable);
@@ -298,7 +312,6 @@ if ($_POST) {
                     error_log("Error sending email to corresponsable ID " . $idUsuarioCorresponsable . ": " . $e->getMessage());
                 } catch (Throwable $t) {
                     error_log("Error: " . $t->getMessage());
-                    
                 }
             }
         }
