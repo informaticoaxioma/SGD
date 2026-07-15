@@ -818,6 +818,23 @@ $(document).ready(function () {
                                 $(".gifCarga").hide("fast");
                                 $("#tituloEspera").hide("fast");
 
+                                // Detect server-side mapping prefix and extract it for debugging
+                                var matches = null;
+                                if (typeof r === 'string' && r.indexOf('###MATCHES###') === 0) {
+                                    var parts = r.split('\n');
+                                    try {
+                                        matches = JSON.parse(parts[0].replace('###MATCHES###', ''));
+                                    } catch (e) {
+                                        console.error('Error parsing matches JSON', e);
+                                    }
+                                    // Rebuild r as the remaining response (e.g., '1')
+                                    r = parts.slice(1).join('\n');
+                                }
+
+                                if (matches) {
+                                    console.log('Carga masiva - emparejamientos NumDocumento => archivo:', matches);
+                                }
+
                                 if (r == '1') {
 
                                     $("#formCargaMasiva").each(function () {

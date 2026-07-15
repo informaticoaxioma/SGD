@@ -97,6 +97,7 @@ if ($_POST) {
 
 
 
+            $matchMap = array();
             for ($i = 2; $i <= intval($totalFilas); $i++) {
                 error_log("------------------------------------------- CONTADOR :" . $i);
                 //CLASSES
@@ -134,6 +135,8 @@ if ($_POST) {
                     error_log("No file found matching Num Documento '" . $numDocumentoFila . "' for row " . $i);
                     $documento->setNombreDocumento("");
                 }
+                // record what was matched (null if none)
+                $matchMap[$numDocumentoFila] = $matched ? $fileName : null;
                 
 
                 //SETEAR OBJETOS: DOCUMENTO y DETALLE
@@ -258,7 +261,9 @@ if ($_POST) {
 
             $serviceLog->ingresarLog($log); //INGRESANDO REGISTRO AL LOG
 
-            echo 1;
+            // Emit mapping debug info before the final response so frontend can log matches.
+            // Prefix with a unique marker to let JS detect it.
+            echo "###MATCHES###" . json_encode($matchMap) . "\n1";
             break;
 
         case '2':
