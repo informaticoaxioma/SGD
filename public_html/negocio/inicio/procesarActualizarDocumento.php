@@ -154,11 +154,7 @@ if (isset($_POST['flagDoc'])) {
             }
 
             $nombreDocumento = $doc[0]['nombre_documento'];
-            $nombreAux = explode(".", $nombreDocumento);
-            $nombreFormat = str_replace(".", "_", $nombreAux[0]);
-            $nombreFormat = str_replace(" ", "_", $nombreFormat);
-            $nombreFormat = str_replace(",", "_", $nombreFormat);
-            $nombrefinal = $nombreFormat . "." . $extension;
+            $nombrefinal = $nombreDocumento;
 
             $contenido = $doc[0]['documento'];
 
@@ -202,12 +198,7 @@ if (isset($_POST['flagDoc'])) {
 
             $nombreDocumento = $adjunto->getNombreAdjunto();
             $contenido = $adjunto->getArchivoAdjunto();
-
-            $nombreAux = explode(".", $nombreDocumento);
-            $nombreFormat = str_replace(".", "_", $nombreAux[0]);
-            $nombreFormat = str_replace(" ", "_", $nombreFormat);
-            $nombreFormat = str_replace(",", "_", $nombreFormat);
-            $nombrefinal = $nombreFormat . "." . $extension;
+            $nombrefinal = $nombreDocumento;
 
             header("Content-type: $mime");
             header("Content-Disposition: attachment; filename=" . $nombrefinal);
@@ -248,12 +239,7 @@ if (isset($_POST['flagDoc'])) {
 
             $nombreDocumento = $doc[0]['nombre_documento'];
             $contenido = $doc[0]['documento'];
-
-            $nombreAux = explode(".", $nombreDocumento);
-            $nombreFormat = str_replace(".", "_", $nombreAux[0]);
-            $nombreFormat = str_replace(" ", "_", $nombreFormat);
-            $nombreFormat = str_replace(",", "_", $nombreFormat);
-            $nombrefinal = $nombreFormat . "." . $extension;
+            $nombrefinal = $nombreDocumento;
 
             header("Content-type: $mime");
             header("Content-Disposition: attachment; filename=" . $nombrefinal);
