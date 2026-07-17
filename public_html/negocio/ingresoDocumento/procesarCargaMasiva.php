@@ -171,56 +171,74 @@ if ($_POST) {
                 }
 
                 $idContrato = $usuario->getIdContrato();
-                $remitente = $sheet->getCell('F' . $i)->getValue();
-                $cargoR = $sheet->getCell('G' . $i)->getValue();
-                $destinatario = $sheet->getCell('H' . $i)->getValue();
-                $cargoD = $sheet->getCell('I' . $i)->getValue();
+                $remitente = trim((string)$sheet->getCell('F' . $i)->getValue());
+                $cargoR = trim((string)$sheet->getCell('G' . $i)->getValue());
+                $destinatario = trim((string)$sheet->getCell('H' . $i)->getValue());
+                $cargoD = trim((string)$sheet->getCell('I' . $i)->getValue());
 
-
-                $nombreR = explode(" ", $remitente);
-                if (count($nombreR) > 1) {
-                    $nomR = $nombreR[0];
-                    $apeR = "";
-                    for ($f = 1; $f < count($nombreR); $f++) {
-                        $apeR .= $nombreR[$f] . " ";
-                    }
+                // Remitente
+                if (is_numeric($remitente) && intval($remitente) > 0) {
+                    $entidadR = intval($remitente);
                 } else {
-                    $nomR = $nombreR[0];
-                    $apeR = " ";
-                }
-                $apeR = mb_convert_encoding($apeR, 'UTF-8', 'auto');
-
-                $nombreD = explode(" ", $destinatario);
-                if (count($nombreD) > 1) {
-                    $nomD = $nombreD[0];
-                    $apeD = "";
-                    for ($j = 1; $j < count($nombreD); $j++) {
-                        $apeD .= $nombreD[$j] . " ";
+                    $nombreR = explode(" ", $remitente);
+                    if (count($nombreR) > 1) {
+                        $nomR = $nombreR[0];
+                        $apeR = "";
+                        for ($f = 1; $f < count($nombreR); $f++) {
+                            $apeR .= $nombreR[$f] . " ";
+                        }
+                    } else {
+                        $nomR = $nombreR[0];
+                        $apeR = " ";
                     }
-                } else {
-                    $nomD = $nombreD[0];
-                    $apeD = " ";
+                    $apeR = mb_convert_encoding($apeR, 'UTF-8', 'auto');
+
+                    if (is_numeric($cargoR) && intval($cargoR) > 0) {
+                        $resultadoR = array("estado" => "encontrado", "idCargo" => intval($cargoR));
+                    } else {
+                        $resultadoR = $serviceCargo->ConsultarCargoCargaMasiva($cargoR, $idContrato);
+                    }
+
+                    $entidad = new Entidad();
+                    $entidad->setNombreEntidad($nomR);
+                    $entidad->setApellidoEntidad($apeR);
+                    $entidad->setIdTipoEntidad(1);
+                    $entidad->setIdCargo($resultadoR["idCargo"]);
+                    $entidad->setIdContrato($idContrato);
+                    $entidadR = $serviceEntidad->consultarEntidadCargaMasiva($resultadoR["estado"], $entidad);
                 }
-                $apeD = mb_convert_encoding($apeD, 'UTF-8', 'auto');
 
-                $resultadoR = $serviceCargo->ConsultarCargoCargaMasiva($cargoR, $idContrato);
-                $resultadoD = $serviceCargo->ConsultarCargoCargaMasiva($cargoD, $idContrato);
+                // Destinatario
+                if (is_numeric($destinatario) && intval($destinatario) > 0) {
+                    $entidadD = intval($destinatario);
+                } else {
+                    $nombreD = explode(" ", $destinatario);
+                    if (count($nombreD) > 1) {
+                        $nomD = $nombreD[0];
+                        $apeD = "";
+                        for ($j = 1; $j < count($nombreD); $j++) {
+                            $apeD .= $nombreD[$j] . " ";
+                        }
+                    } else {
+                        $nomD = $nombreD[0];
+                        $apeD = " ";
+                    }
+                    $apeD = mb_convert_encoding($apeD, 'UTF-8', 'auto');
 
-                $entidad = new Entidad();
-                $entidad->setNombreEntidad($nomR);
-                $entidad->setApellidoEntidad($apeR);
-                $entidad->setIdTipoEntidad(1);
-                $entidad->setIdCargo($resultadoR["idCargo"]);
-                $entidad->setIdContrato($idContrato);
-                $entidadR = $serviceEntidad->consultarEntidadCargaMasiva($resultadoR["estado"], $entidad);
+                    if (is_numeric($cargoD) && intval($cargoD) > 0) {
+                        $resultadoD = array("estado" => "encontrado", "idCargo" => intval($cargoD));
+                    } else {
+                        $resultadoD = $serviceCargo->ConsultarCargoCargaMasiva($cargoD, $idContrato);
+                    }
 
-                $entidad = new Entidad();
-                $entidad->setNombreEntidad($nomD);
-                $entidad->setApellidoEntidad($apeD);
-                $entidad->setIdTipoEntidad(2);
-                $entidad->setIdCargo($resultadoD["idCargo"]);
-                $entidad->setIdContrato($idContrato);
-                $entidadD = $serviceEntidad->consultarEntidadCargaMasiva($resultadoD["estado"], $entidad);
+                    $entidad = new Entidad();
+                    $entidad->setNombreEntidad($nomD);
+                    $entidad->setApellidoEntidad($apeD);
+                    $entidad->setIdTipoEntidad(2);
+                    $entidad->setIdCargo($resultadoD["idCargo"]);
+                    $entidad->setIdContrato($idContrato);
+                    $entidadD = $serviceEntidad->consultarEntidadCargaMasiva($resultadoD["estado"], $entidad);
+                }
 
                 $detalle->setIdRemitente($entidadR);
                 $detalle->setIdDestinatario($entidadD);
