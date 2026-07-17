@@ -7,24 +7,37 @@ if ($_POST) {
 
     $idDoc = htmlspecialchars($_POST['idDocumento']);
     $doc = $serviceDocumento->getDocumentoPorID($idDoc);
-    $mime = $doc[0]['mime_documento'];
-    $nombreDocumento = $doc[0]['nombre_documento'];
-    $nombreAux = explode(".", $nombreDocumento);
-    $nombreFormat = "";
-    for ($i = 0; $i < (count($nombreAux) - 1); $i++) {
-        $nombreFormat.=$nombreAux[$i];
+    $dbMime = $doc[0]['mime_documento'];
+    $extension = $dbMime;
+    if (strpos($dbMime, '/') !== false) {
+        $parts = explode('/', $dbMime);
+        $extension = end($parts);
+    }
+    $extension = strtolower($extension);
+
+    $mime = $dbMime;
+    if (strpos($dbMime, '/') === false) {
+        switch ($extension) {
+            case 'pdf':
+                $mime = 'application/pdf';
+                break;
+            case 'jpg':
+            case 'jpeg':
+                $mime = 'image/jpeg';
+                break;
+            case 'png':
+                $mime = 'image/png';
+                break;
+            default:
+                $mime = 'application/octet-stream';
+        }
     }
 
+    $nombreDocumento = $doc[0]['nombre_documento'];
+    $nombreAux = explode(".", $nombreDocumento);
     $nombreFormat = str_replace(".", "_", $nombreAux[0]);
     $nombreFormat = str_replace(" ", "_", $nombreFormat);
     $nombreFormat = str_replace(",", "_", $nombreFormat);
-
-    // If mime is a full type like application/pdf, use the extension part for filename
-    $extension = $mime;
-    if (strpos($mime, '/') !== false) {
-        $parts = explode('/', $mime);
-        $extension = end($parts);
-    }
 
     $nombrefinal = $nombreFormat . "." . $extension;
     $contenido = $doc[0]['documento'];

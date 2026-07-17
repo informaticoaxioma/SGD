@@ -5,7 +5,25 @@ $serviceDocumento = new Documento();
 
 $idDoc = htmlspecialchars($_POST['idDocumento']);
 $doc = $serviceDocumento->getDocumentoPorID($idDoc);
-$mime = $doc[0]['mime_documento'];
+$dbMime = $doc[0]['mime_documento'];
+$mime = $dbMime;
+if (strpos($dbMime, '/') === false) {
+    $extension = strtolower($dbMime);
+    switch ($extension) {
+        case 'pdf':
+            $mime = 'application/pdf';
+            break;
+        case 'jpg':
+        case 'jpeg':
+            $mime = 'image/jpeg';
+            break;
+        case 'png':
+            $mime = 'image/png';
+            break;
+        default:
+            $mime = 'application/octet-stream';
+    }
+}
 $nombreDocumento = $doc[0]['nombre_documento'];
 $contenido = $doc[0]['documento'];
 

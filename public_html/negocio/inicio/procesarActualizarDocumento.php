@@ -127,16 +127,38 @@ if (isset($_POST['flagDoc'])) {
 
             $idDoc = htmlspecialchars($_POST['idDocumento']);
             $doc = $serviceDocumento->getDocumentoPorID($idDoc);
-            $mime = $doc[0]['mime_documento'];
+            $dbMime = $doc[0]['mime_documento'];
+            $extension = $dbMime;
+            if (strpos($dbMime, '/') !== false) {
+                $parts = explode('/', $dbMime);
+                $extension = end($parts);
+            }
+            $extension = strtolower($extension);
+
+            $mime = $dbMime;
+            if (strpos($dbMime, '/') === false) {
+                switch ($extension) {
+                    case 'pdf':
+                        $mime = 'application/pdf';
+                        break;
+                    case 'jpg':
+                    case 'jpeg':
+                        $mime = 'image/jpeg';
+                        break;
+                    case 'png':
+                        $mime = 'image/png';
+                        break;
+                    default:
+                        $mime = 'application/octet-stream';
+                }
+            }
+
             $nombreDocumento = $doc[0]['nombre_documento'];
             $nombreAux = explode(".", $nombreDocumento);
-            $nombreFormat = "";
-
-
             $nombreFormat = str_replace(".", "_", $nombreAux[0]);
             $nombreFormat = str_replace(" ", "_", $nombreFormat);
             $nombreFormat = str_replace(",", "_", $nombreFormat);
-            $nombrefinal = $nombreFormat . "." . $mime;
+            $nombrefinal = $nombreFormat . "." . $extension;
 
             $contenido = $doc[0]['documento'];
 
@@ -152,18 +174,40 @@ if (isset($_POST['flagDoc'])) {
             $idAdjunto = htmlspecialchars($_POST['idAdjunto']);
             $adjunto = $serviceAdjunto->getAdjuntoPorId($idAdjunto);
 
-            $mime = $adjunto->getMimeAdjunto();
+            $dbMime = $adjunto->getMimeAdjunto();
+            $extension = $dbMime;
+            if (strpos($dbMime, '/') !== false) {
+                $parts = explode('/', $dbMime);
+                $extension = end($parts);
+            }
+            $extension = strtolower($extension);
+
+            $mime = $dbMime;
+            if (strpos($dbMime, '/') === false) {
+                switch ($extension) {
+                    case 'pdf':
+                        $mime = 'application/pdf';
+                        break;
+                    case 'jpg':
+                    case 'jpeg':
+                        $mime = 'image/jpeg';
+                        break;
+                    case 'png':
+                        $mime = 'image/png';
+                        break;
+                    default:
+                        $mime = 'application/octet-stream';
+                }
+            }
+
             $nombreDocumento = $adjunto->getNombreAdjunto();
             $contenido = $adjunto->getArchivoAdjunto();
 
             $nombreAux = explode(".", $nombreDocumento);
-            $nombreFormat = "";
-
-
             $nombreFormat = str_replace(".", "_", $nombreAux[0]);
             $nombreFormat = str_replace(" ", "_", $nombreFormat);
             $nombreFormat = str_replace(",", "_", $nombreFormat);
-            $nombrefinal = $nombreFormat . "." . $mime;
+            $nombrefinal = $nombreFormat . "." . $extension;
 
             header("Content-type: $mime");
             header("Content-Disposition: attachment; filename=" . $nombrefinal);
@@ -176,20 +220,40 @@ if (isset($_POST['flagDoc'])) {
             $idDocRel = htmlspecialchars($_POST['idDocRelacionado']);
             $doc = $serviceDocumento->getDocumentoPorID($idDocRel);
 
-            $mime = $doc[0]['mime_documento'];
+            $dbMime = $doc[0]['mime_documento'];
+            $extension = $dbMime;
+            if (strpos($dbMime, '/') !== false) {
+                $parts = explode('/', $dbMime);
+                $extension = end($parts);
+            }
+            $extension = strtolower($extension);
+
+            $mime = $dbMime;
+            if (strpos($dbMime, '/') === false) {
+                switch ($extension) {
+                    case 'pdf':
+                        $mime = 'application/pdf';
+                        break;
+                    case 'jpg':
+                    case 'jpeg':
+                        $mime = 'image/jpeg';
+                        break;
+                    case 'png':
+                        $mime = 'image/png';
+                        break;
+                    default:
+                        $mime = 'application/octet-stream';
+                }
+            }
+
             $nombreDocumento = $doc[0]['nombre_documento'];
             $contenido = $doc[0]['documento'];
 
             $nombreAux = explode(".", $nombreDocumento);
-            $nombreFormat = "";
-
-
             $nombreFormat = str_replace(".", "_", $nombreAux[0]);
             $nombreFormat = str_replace(" ", "_", $nombreFormat);
             $nombreFormat = str_replace(",", "_", $nombreFormat);
-            $nombrefinal = $nombreFormat . "." . $mime;
-
-            $contenido = $doc[0]['documento'];
+            $nombrefinal = $nombreFormat . "." . $extension;
 
             header("Content-type: $mime");
             header("Content-Disposition: attachment; filename=" . $nombrefinal);

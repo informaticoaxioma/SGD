@@ -85,11 +85,13 @@ if ($_POST) {
             $fileMap = [];
             if (isset($_FILES['cargaDocumentos']) && isset($_FILES['cargaDocumentos']['name'])) {
                 foreach ($_FILES['cargaDocumentos']['name'] as $index => $name) {
+                    $parts = explode(".", $name);
+                    $fileExtension = end($parts);
                     $fileMap[] = [
                         'tmp_name' => $_FILES['cargaDocumentos']['tmp_name'][$index],
                         'size' => $_FILES['cargaDocumentos']['size'][$index],
                         'name' => $name,
-                        'type' => $_FILES['cargaDocumentos']['type'][$index],
+                        'type' => $fileExtension,
                         'name_lc' => strtolower($name)
                     ];
                 }

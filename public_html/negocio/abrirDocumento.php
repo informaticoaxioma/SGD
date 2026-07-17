@@ -11,21 +11,14 @@ if ($_POST) {
     if (!$doc) {
         die("Documento no encontrado");
     }
-    $nombreDocumento = $doc[0]['nombre_documento'];
-    $nombreAux = explode(".", $nombreDocumento);
-    $nombreFormat = "";
-    for ($i = 0; $i < (count($nombreAux) - 1); $i++) {
-        $nombreFormat.=$nombreAux[$i];
+    $dbMime = $doc[0]['mime_documento'];
+    $extension = $dbMime;
+    if (strpos($dbMime, '/') !== false) {
+        $parts = explode('/', $dbMime);
+        $extension = end($parts);
     }
+    $extension = strtolower($extension);
 
-    $nombreFormat = str_replace(".", "_", $nombreAux[0]);
-    $nombreFormat = str_replace(" ", "_", $nombreFormat);
-    $nombreFormat = str_replace(",", "_", $nombreFormat);
-    $nombrefinal = $nombreFormat . "." . $mime;
-    $contenido = $doc[0]['documento'];
-    
-    $extension = $doc[0]['mime_documento'];
-    
     switch ($extension) {
         case 'pdf':
             $mime = 'application/pdf';
@@ -38,8 +31,20 @@ if ($_POST) {
             $mime = 'image/png';
             break;
         default:
-            $mime = 'application/octet-stream';
+            if (strpos($dbMime, '/') !== false) {
+                $mime = $dbMime;
+            } else {
+                $mime = 'application/octet-stream';
+            }
     }
+
+    $nombreDocumento = $doc[0]['nombre_documento'];
+    $nombreAux = explode(".", $nombreDocumento);
+    $nombreFormat = str_replace(".", "_", $nombreAux[0]);
+    $nombreFormat = str_replace(" ", "_", $nombreFormat);
+    $nombreFormat = str_replace(",", "_", $nombreFormat);
+    $nombrefinal = $nombreFormat . "." . $extension;
+    $contenido = $doc[0]['documento'];
 
     
     header("Content-Type: $mime");
