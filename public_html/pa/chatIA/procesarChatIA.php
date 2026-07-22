@@ -41,7 +41,7 @@ mysqli_set_charset($cnx, 'utf8');
 
 // Helper para llamar a Gemini
 function llamarGemini($apiKey, $prompt, $jsonMode = false) {
-    $model = defined('GEMINI_MODEL') ? GEMINI_MODEL : 'gemini-1.5-flash';
+    $model = defined('GEMINI_MODEL') ? GEMINI_MODEL : 'gemini-flash-latest';
     $url = 'https://generativelanguage.googleapis.com/v1beta/models/' . $model . ':generateContent?key=' . $apiKey;
     
     $data = [

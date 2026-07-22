@@ -4,4 +4,4 @@
 // Si se deja vacía '', el chat de IA le solicitará al usuario su propia API Key de forma local.
 
 define('GEMINI_API_KEY', '');
-define('GEMINI_MODEL', 'gemini-1.5-flash');
+define('GEMINI_MODEL', 'gemini-flash-latest');
