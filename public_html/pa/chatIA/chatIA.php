@@ -1,4 +1,5 @@
 <?php
+require_once '../../data/Usuario.php';
 session_start();
 if (!isset($_SESSION['usuario'])) {
     die("Acceso denegado");

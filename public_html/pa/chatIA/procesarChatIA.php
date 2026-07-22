@@ -3,6 +3,7 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once '../../data/config_ai.php';
 require_once '../../data/Conexion.php';
+require_once '../../data/Usuario.php';
 
 session_start();
 if (!isset($_SESSION['usuario'])) {

@@ -112,7 +112,7 @@ $autoload = new Autoload();?>
         <script src="js/bootstrap.min.js"></script>    
 
         <!--Funciones JS -->
-        <script src="funcionesJS/llamadasAjax.js"></script>
+        <script src="funcionesJS/llamadasAjax.js?v=<?= time() ?>"></script>
         <script src="funcionesJS/cargarCalendario.js"></script>
         <script src="funcionesJS/inicio/funcionesInicio.js"></script>
 
