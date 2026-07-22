@@ -12,6 +12,8 @@ if (!isset($_SESSION['usuario'])) {
 }
 
 $usuarioSession = $_SESSION['usuario'];
+$userProfile = (int)$usuarioSession->getIdPerfil();
+$userContractId = (int)$usuarioSession->getIdContrato();
 
 // Obtener datos de la petición
 $input = json_decode(file_get_contents('php://input'), true);
@@ -121,7 +123,7 @@ La base de datos contiene estas tablas principales:
 
 Debes retornar EXCLUSIVAMENTE un objeto JSON estructurado con las siguientes claves:
 - 'intent': Debe ser uno de: 'contract', 'user', 'document', 'general' (la intención principal de búsqueda).
-- 'keywords': Un array de palabras clave (strings) extraídas de la consulta para usar en búsquedas LIKE generales. Si no hay términos de texto significativos, mantén el array vacío.
+- 'keywords': Un array de palabras clave (strings) extraídas de la consulta para usar en búsquedas LIKE generales. Si no hay términos de texto significativos y específicos, mantén el array vacío. IMPORTANTE: NO incluyas palabras genéricas del sistema como 'usuario', 'usuarios', 'contrato', 'contratos', 'documento', 'documentos', 'listar', 'lista', 'mostrar', 'todos', 'ver', 'dame', 'entregar', 'especifico'.
 - 'filters': Un objeto con filtros clave extraídos de la consulta:
   - 'usuario_nombre': string o null (si se busca un nombre/apellido de persona específico)
   - 'usuario_correo': string o null (si se busca un email de usuario específico)
@@ -146,7 +148,7 @@ if (!$searchParams) {
     // Si falla el parseo, usamos parámetros por defecto
     $searchParams = [
         'intent' => 'general',
-        'keywords' => explode(' ', $query),
+        'keywords' => [],
         'filters' => []
     ];
 }
@@ -154,6 +156,22 @@ if (!$searchParams) {
 $intent = $searchParams['intent'] ?? 'general';
 $keywords = $searchParams['keywords'] ?? [];
 $filters = $searchParams['filters'] ?? [];
+
+// Filtrar palabras clave genéricas (Stopwords) para evitar búsquedas vacías en consultas generales
+$stopwords = [
+    'usuario', 'usuarios', 'contrato', 'contratos', 'documento', 'documentos', 
+    'listar', 'lista', 'mostrar', 'todos', 'todas', 'ver', 'dame', 'entregar', 
+    'especifico', 'específicos', 'especifica', 'especificas', 'buscar', 'busca', 
+    'con', 'del', 'los', 'las', 'unos', 'unas', 'para', 'sobre', 'materia'
+];
+$filteredKeywords = [];
+foreach ($keywords as $kw) {
+    $kwClean = preg_replace('/[^\p{L}\p{N}\s]/u', '', mb_strtolower(trim($kw)));
+    if (!in_array($kwClean, $stopwords) && mb_strlen($kwClean) > 2) {
+        $filteredKeywords[] = $kw;
+    }
+}
+$keywords = $filteredKeywords;
 
 $dbResults = [];
 
@@ -165,6 +183,12 @@ if ($intent === 'contract' || $intent === 'general') {
             WHERE 1=1";
     $params = [];
     $types = "";
+    
+    if ($userProfile !== 1) {
+        $sql .= " AND c.id_contrato = ?";
+        $params[] = $userContractId;
+        $types .= "i";
+    }
     
     if (!empty($filters['contrato_nombre'])) {
         $sql .= " AND c.nombre_contrato LIKE ?";
@@ -203,6 +227,12 @@ if ($intent === 'user' || $intent === 'general') {
             WHERE 1=1";
     $params = [];
     $types = "";
+    
+    if ($userProfile !== 1) {
+        $sql .= " AND u.id_contrato = ?";
+        $params[] = $userContractId;
+        $types .= "i";
+    }
     
     if (!empty($filters['usuario_nombre'])) {
         $sql .= " AND (u.nombre LIKE ? OR u.apellido_p LIKE ? OR u.apellido_m LIKE ?)";
@@ -256,6 +286,12 @@ if ($intent === 'document' || $intent === 'general') {
             WHERE 1=1";
     $params = [];
     $types = "";
+    
+    if ($userProfile !== 1) {
+        $sql .= " AND sc.id_contrato = ?";
+        $params[] = $userContractId;
+        $types .= "i";
+    }
     
     if (!empty($filters['doc_nombre'])) {
         $sql .= " AND d.nombre_documento LIKE ?";
