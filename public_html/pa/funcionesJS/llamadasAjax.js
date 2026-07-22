@@ -306,3 +306,10 @@ function cargaBases(idBas) {
     });
 }
 
+function cargarChatIA() {
+    $.get("chatIA/chatIA.php", function (r) {
+        $("#contenedorAjax").html(r);
+        $("#headerInicio").empty();
+    });
+}
+

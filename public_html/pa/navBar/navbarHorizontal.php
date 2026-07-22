@@ -119,6 +119,9 @@
             <li>
                 <a href=#buscador onclick="cargarBuscador()"><i class="fa fa-fw fa-search"></i> Buscador</a>
             </li>      
+            <li>
+                <a href="#chatIA" onclick="cargarChatIA()"><i class="fa fa-fw fa-comments"></i> Chat con IA</a>
+            </li>
 
 <!--            <li>
                 <a href="javascript:;" data-toggle="collapse" data-target="#hitosContractuales"><i class="fa fa-fw fa-briefcase"></i> Hitos Contractuales<i class="fa fa-fw fa-caret-down"></i></a>

@@ -3,9 +3,9 @@
 require_once '../data/Documento.php';
 $serviceDocumento = new Documento();
 
-if ($_POST) {
+if ($_POST || isset($_GET['idDocumento'])) {
 
-    $idDoc = htmlspecialchars($_POST['idDocumento']);
+    $idDoc = htmlspecialchars(isset($_POST['idDocumento']) ? $_POST['idDocumento'] : $_GET['idDocumento']);
     $doc = $serviceDocumento->getDocumentoPorID($idDoc);
     $dbMime = $doc[0]['mime_documento'];
     $extension = $dbMime;
