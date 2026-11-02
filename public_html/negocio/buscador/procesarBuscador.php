@@ -134,6 +134,7 @@ if ($_POST) {//CARGANDO VALORES PARA POST POR AJAX
     echo '<th>N° Proceso</th>';
     echo '<th>Fecha Documento</th>';
     echo '<th>Fecha Plazo</th>';
+    echo '<th>fecha_cierre</th>';
     echo '<th>Tipo Documento</th>';
     echo '<th>Materia</th>';
     echo '<th>Remitente</th>';
@@ -158,12 +159,18 @@ if ($_POST) {//CARGANDO VALORES PARA POST POR AJAX
             $responsable = $serviceUsuario->getUsuarioPorId($d['id_responsable']);
 
 
+            if ($d['id_estado_doc'] == 2) {
+                $fechaCierre = (!empty($d['fecha_cierre']) && $d['fecha_cierre'] != '0000-00-00') ? $serviceDocumento->formatoFecha($d['fecha_cierre']) : $serviceDocumento->formatoFecha($d['fecha_documento']);
+            } else {
+                $fechaCierre = '';
+            }
             echo' <tr id="' . $c . '">';
             echo "<td>" . $d['num_documento'] . "</td>";
             echo "<td>" . $d['num_providencia'] . "</td>";
             echo "<td>" . $d['num_proceso'] . "</td>";
             echo "<td>" . $serviceDocumento->formatoFecha($d['fecha_documento']) . "</td>";
             echo "<td>" . $serviceDocumento->formatoFecha($d['fecha_plazo']) . "</td>";
+            echo "<td>" . $fechaCierre . "</td>";
             echo "<td>" . $tipoDoc->getTipoDocumento() . "</td>";
             echo "<td class='text-justify'>" . $d['materia'] . "</td>";
             echo "<td>" . $remitente->getNombreEntidad() . " " . $remitente->getApellidoEntidad() . "</td>";

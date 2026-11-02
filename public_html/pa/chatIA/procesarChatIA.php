@@ -110,7 +110,10 @@ function extraerPalabrasSignificativas($texto) {
         'y', 'o', 'u', 'que', 'como', 'tiene', 'tienen', 'es', 'son', 'fue', 'sea', 'responsable', 'responsables',
         'remitente', 'remitentes', 'destinatario', 'destinatarios', 'documento', 'documentos', 'ultimo', 'ultimos',
         'ultima', 'ultimas', 'reciente', 'recientes', 'dame', 'mostrar', 'muestra', 'ver', 'buscar', 'busca',
-        'enviado', 'enviados', 'dirigido', 'dirigidos', 'asignado', 'asignados', 'cargo'
+        'enviado', 'enviados', 'dirigido', 'dirigidos', 'asignado', 'asignados', 'cargo',
+        'cuanto', 'cuantos', 'cuanta', 'cuantas', 'cantidad', 'cantidades', 'cifra', 'cifras',
+        'total', 'totales', 'historico', 'historicos', 'historica', 'historicas', 'registro', 'registros',
+        'estadistica', 'estadisticas', 'conteo', 'contar', 'hay', 'existen'
     ];
     $limpio = preg_replace('/[^\p{L}\p{N}\s]/u', ' ', (string)$texto);
     $partes = preg_split('/\s+/u', trim($limpio), -1, PREG_SPLIT_NO_EMPTY);
@@ -164,29 +167,11 @@ function formatearFilaDocumento($row) {
 }
 
 /**
- * Función para acceder y buscar documentos del contrato del usuario logueado
- * filtrando por sus variables: responsable, remitente, destinatario, tipo, materia,
- * número, estado, flujo, subcontrato, fechas y palabras clave.
+ * Construye los JOINs y cláusula WHERE común para consultar o contar documentos
+ * del contrato del usuario logueado aplicando todos los filtros de variables.
  */
-function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = []) {
-    $sql = "SELECT d.id_documento, d.nombre_documento, d.fecha_documento, d.fecha_recepcion, d.fecha_plazo,
-                   CASE WHEN d.id_estado_doc = 1 THEN 'Pendiente' WHEN d.id_estado_doc = 2 THEN 'Cerrado' ELSE 'Otro' END AS estado_documento,
-                   CASE WHEN d.id_flujo = 1 THEN 'Entrada' WHEN d.id_flujo = 2 THEN 'Salida' ELSE 'Otro' END AS flujo_documento,
-                   dd.num_documento, dd.num_providencia, dd.num_proceso, dd.materia, dd.antecedente, dd.incluye, dd.comentario,
-                   td.tipo_documento,
-                   dd.id_responsable,
-                   u.nombre AS resp_nombre, u.apellido_p AS resp_apellido_p, u.apellido_m AS resp_apellido_m,
-                   u.correo AS correo_responsable,
-                   dd.id_remitente,
-                   rem.nombre_entidad AS rem_nombre, rem.apellido_entidad AS rem_apellido,
-                   crem.cargo AS cargo_remitente,
-                   dd.id_destinatario,
-                   dest.nombre_entidad AS dest_nombre, dest.apellido_entidad AS dest_apellido,
-                   cdest.cargo AS cargo_destinatario,
-                   sc.nombre_subcontrato,
-                   c.nombre_contrato AS contrato_sub,
-                   cu.nombre_contrato AS contrato_usr
-            FROM documento d
+function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = []) {
+    $fromJoins = " FROM documento d
             INNER JOIN detalle_documento dd ON d.id_documento = dd.id_documento
             LEFT JOIN subcontrato sc ON d.id_subcontrato = sc.id_subcontrato
             LEFT JOIN contrato c ON sc.id_contrato = c.id_contrato
@@ -196,20 +181,21 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
             LEFT JOIN entidad rem ON dd.id_remitente = rem.id_entidad
             LEFT JOIN cargo crem ON rem.id_cargo = crem.id_cargo
             LEFT JOIN entidad dest ON dd.id_destinatario = dest.id_entidad
-            LEFT JOIN cargo cdest ON dest.id_cargo = cdest.id_cargo
-            WHERE 1=1";
+            LEFT JOIN cargo cdest ON dest.id_cargo = cdest.id_cargo";
+
+    $where = " WHERE 1=1";
     $params = [];
     $types = "";
 
     // Restricción estricta al contrato del usuario logueado
     if ($userContractId === 1) {
-        $sql .= " AND ((sc.id_contrato = ? AND (u.id_contrato = ? OR u.id_contrato IS NULL)) OR u.id_contrato = ?)";
+        $where .= " AND ((sc.id_contrato = ? AND (u.id_contrato = ? OR u.id_contrato IS NULL)) OR u.id_contrato = ?)";
         $params[] = $userContractId;
         $params[] = $userContractId;
         $params[] = $userContractId;
         $types .= "iii";
     } else {
-        $sql .= " AND ((d.id_subcontrato <> 1 AND sc.id_contrato = ?) OR u.id_contrato = ?)";
+        $where .= " AND ((d.id_subcontrato <> 1 AND sc.id_contrato = ?) OR u.id_contrato = ?)";
         $params[] = $userContractId;
         $params[] = $userContractId;
         $types .= "ii";
@@ -217,24 +203,24 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
 
     // 1. Filtro por ID exacto si fue enviado
     if (!empty($customVars['id_responsable'])) {
-        $sql .= " AND dd.id_responsable = ?";
+        $where .= " AND dd.id_responsable = ?";
         $params[] = (int)$customVars['id_responsable'];
         $types .= "i";
     }
     if (!empty($customVars['id_remitente'])) {
-        $sql .= " AND dd.id_remitente = ?";
+        $where .= " AND dd.id_remitente = ?";
         $params[] = (int)$customVars['id_remitente'];
         $types .= "i";
     }
     if (!empty($customVars['id_destinatario'])) {
-        $sql .= " AND dd.id_destinatario = ?";
+        $where .= " AND dd.id_destinatario = ?";
         $params[] = (int)$customVars['id_destinatario'];
         $types .= "i";
     }
 
     // 2. Filtro si pide solo documentos donde el usuario logueado es responsable
     if (!empty($filters['solo_mis_documentos'])) {
-        $sql .= " AND dd.id_responsable = ?";
+        $where .= " AND dd.id_responsable = ?";
         $params[] = $userId;
         $types .= "i";
     }
@@ -264,14 +250,14 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
 
         if (!empty($matchedUserIds)) {
             $placeholders = implode(',', array_fill(0, count($matchedUserIds), '?'));
-            $sql .= " AND dd.id_responsable IN ($placeholders)";
+            $where .= " AND dd.id_responsable IN ($placeholders)";
             foreach ($matchedUserIds as $uid) {
                 $params[] = $uid;
                 $types .= "i";
             }
         } elseif (!empty($words)) {
             foreach ($words as $w) {
-                $sql .= " AND (" . sqlLikeUtf8('u.nombre') . " OR " . sqlLikeUtf8('u.apellido_p') . " OR " . sqlLikeUtf8('u.apellido_m') . " OR " . sqlLikeUtf8('u.nombre_usuario') . ")";
+                $where .= " AND (" . sqlLikeUtf8('u.nombre') . " OR " . sqlLikeUtf8('u.apellido_p') . " OR " . sqlLikeUtf8('u.apellido_m') . " OR " . sqlLikeUtf8('u.nombre_usuario') . ")";
                 $likeW = "%" . $w . "%";
                 $params[] = $likeW;
                 $params[] = $likeW;
@@ -286,7 +272,7 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
     if (empty($customVars['id_remitente']) && !empty($filters['remitente'])) {
         $words = extraerPalabrasSignificativas($filters['remitente']);
         foreach ($words as $w) {
-            $sql .= " AND (" . sqlLikeUtf8('rem.nombre_entidad') . " OR " . sqlLikeUtf8('rem.apellido_entidad') . " OR " . sqlLikeUtf8('crem.cargo') . ")";
+            $where .= " AND (" . sqlLikeUtf8('rem.nombre_entidad') . " OR " . sqlLikeUtf8('rem.apellido_entidad') . " OR " . sqlLikeUtf8('crem.cargo') . ")";
             $likeW = "%" . $w . "%";
             $params[] = $likeW;
             $params[] = $likeW;
@@ -299,7 +285,7 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
     if (empty($customVars['id_destinatario']) && !empty($filters['destinatario'])) {
         $words = extraerPalabrasSignificativas($filters['destinatario']);
         foreach ($words as $w) {
-            $sql .= " AND (" . sqlLikeUtf8('dest.nombre_entidad') . " OR " . sqlLikeUtf8('dest.apellido_entidad') . " OR " . sqlLikeUtf8('cdest.cargo') . ")";
+            $where .= " AND (" . sqlLikeUtf8('dest.nombre_entidad') . " OR " . sqlLikeUtf8('dest.apellido_entidad') . " OR " . sqlLikeUtf8('cdest.cargo') . ")";
             $likeW = "%" . $w . "%";
             $params[] = $likeW;
             $params[] = $likeW;
@@ -310,31 +296,31 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
 
     // 6. Otras variables del documento: estado, flujo, tipo, materia, subcontrato, nombre, número y fechas
     if (!empty($filters['estado_doc'])) {
-        $sql .= " AND d.id_estado_doc = ?";
+        $where .= " AND d.id_estado_doc = ?";
         $params[] = (int)$filters['estado_doc'];
         $types .= "i";
     }
 
     if (!empty($filters['flujo_doc'])) {
-        $sql .= " AND d.id_flujo = ?";
+        $where .= " AND d.id_flujo = ?";
         $params[] = (int)$filters['flujo_doc'];
         $types .= "i";
     }
 
     if (!empty($filters['tipo_documento'])) {
-        $sql .= " AND " . sqlLikeUtf8('td.tipo_documento');
+        $where .= " AND " . sqlLikeUtf8('td.tipo_documento');
         $params[] = "%" . trim($filters['tipo_documento']) . "%";
         $types .= "s";
     }
 
     if (!empty($filters['subcontrato'])) {
-        $sql .= " AND " . sqlLikeUtf8('sc.nombre_subcontrato');
+        $where .= " AND " . sqlLikeUtf8('sc.nombre_subcontrato');
         $params[] = "%" . trim($filters['subcontrato']) . "%";
         $types .= "s";
     }
 
     if (!empty($filters['materia'])) {
-        $sql .= " AND (" . sqlLikeUtf8('dd.materia') . " OR " . sqlLikeUtf8('dd.antecedente') . " OR " . sqlLikeUtf8('dd.comentario') . ")";
+        $where .= " AND (" . sqlLikeUtf8('dd.materia') . " OR " . sqlLikeUtf8('dd.antecedente') . " OR " . sqlLikeUtf8('dd.comentario') . ")";
         $likeM = "%" . trim($filters['materia']) . "%";
         $params[] = $likeM;
         $params[] = $likeM;
@@ -343,14 +329,14 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
     }
 
     if (!empty($filters['doc_nombre'])) {
-        $sql .= " AND (" . sqlLikeUtf8('d.nombre_documento') . " OR " . sqlLikeUtf8('dd.materia') . ")";
+        $where .= " AND (" . sqlLikeUtf8('d.nombre_documento') . " OR " . sqlLikeUtf8('dd.materia') . ")";
         $params[] = "%" . $filters['doc_nombre'] . "%";
         $params[] = "%" . $filters['doc_nombre'] . "%";
         $types .= "ss";
     }
 
     if (!empty($filters['doc_numero'])) {
-        $sql .= " AND (" . sqlLikeUtf8('dd.num_documento') . " OR " . sqlLikeUtf8('dd.num_providencia') . " OR " . sqlLikeUtf8('dd.num_proceso') . ")";
+        $where .= " AND (" . sqlLikeUtf8('dd.num_documento') . " OR " . sqlLikeUtf8('dd.num_providencia') . " OR " . sqlLikeUtf8('dd.num_proceso') . ")";
         $params[] = "%" . $filters['doc_numero'] . "%";
         $params[] = "%" . $filters['doc_numero'] . "%";
         $params[] = "%" . $filters['doc_numero'] . "%";
@@ -358,14 +344,14 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
     }
 
     if (!empty($filters['fecha_desde'])) {
-        $sql .= " AND (d.fecha_documento >= ? OR d.fecha_recepcion >= ?)";
+        $where .= " AND (d.fecha_documento >= ? OR d.fecha_recepcion >= ?)";
         $params[] = $filters['fecha_desde'];
         $params[] = $filters['fecha_desde'];
         $types .= "ss";
     }
 
     if (!empty($filters['fecha_hasta'])) {
-        $sql .= " AND (d.fecha_documento <= ? OR d.fecha_recepcion <= ?)";
+        $where .= " AND (d.fecha_documento <= ? OR d.fecha_recepcion <= ?)";
         $params[] = $filters['fecha_hasta'];
         $params[] = $filters['fecha_hasta'];
         $types .= "ss";
@@ -400,9 +386,182 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
             }
         }
         if (!empty($orConds)) {
-            $sql .= " AND (" . implode(" OR ", $orConds) . ")";
+            $where .= " AND (" . implode(" OR ", $orConds) . ")";
         }
     }
+
+    return [
+        'from_joins' => $fromJoins,
+        'where' => $where,
+        'params' => $params,
+        'types' => $types
+    ];
+}
+
+/**
+ * Cuenta el registro histórico completo de documentos (cifras y cantidades)
+ * sin retornar el detalle individual de documentos.
+ */
+function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = []) {
+    $base = construirBaseWhereDocumentos($userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
+    $fromWhere = $base['from_joins'] . $base['where'];
+    $params = $base['params'];
+    $types = $base['types'];
+
+    // 1. Resumen total histórico
+    $sqlResumen = "SELECT COUNT(DISTINCT d.id_documento) AS total_historico_documentos,
+                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 1 THEN d.id_documento END) AS total_pendientes,
+                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 2 THEN d.id_documento END) AS total_cerrados,
+                          COUNT(DISTINCT CASE WHEN d.id_flujo = 1 THEN d.id_documento END) AS total_entrada,
+                          COUNT(DISTINCT CASE WHEN d.id_flujo = 2 THEN d.id_documento END) AS total_salida,
+                          MIN(NULLIF(d.fecha_documento, '0000-00-00')) AS primera_fecha_historica,
+                          MAX(NULLIF(d.fecha_documento, '0000-00-00')) AS ultima_fecha_registrada"
+                  . $fromWhere;
+
+    $resResumen = ejecutarSelect($cnx, $sqlResumen, $params, $types);
+    if (isset($resResumen['error'])) {
+        return ['error' => $resResumen['error']];
+    }
+
+    $totales = $resResumen[0] ?? [
+        'total_historico_documentos' => 0,
+        'total_pendientes' => 0,
+        'total_cerrados' => 0,
+        'total_entrada' => 0,
+        'total_salida' => 0,
+        'primera_fecha_historica' => null,
+        'ultima_fecha_registrada' => null
+    ];
+
+    // 2. Desglose histórico por año
+    $sqlPorAnio = "SELECT YEAR(NULLIF(d.fecha_documento, '0000-00-00')) AS anio,
+                          COUNT(DISTINCT d.id_documento) AS cantidad_total,
+                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 1 THEN d.id_documento END) AS pendientes,
+                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 2 THEN d.id_documento END) AS cerrados"
+                  . $fromWhere
+                  . " GROUP BY YEAR(NULLIF(d.fecha_documento, '0000-00-00'))
+                      ORDER BY anio DESC";
+    $resAnio = ejecutarSelect($cnx, $sqlPorAnio, $params, $types);
+    $porAnio = [];
+    if (!isset($resAnio['error'])) {
+        foreach ($resAnio as $r) {
+            $porAnio[] = [
+                'anio' => $r['anio'] !== null ? (int)$r['anio'] : 'Sin fecha',
+                'cantidad_total' => (int)$r['cantidad_total'],
+                'pendientes' => (int)$r['pendientes'],
+                'cerrados' => (int)$r['cerrados']
+            ];
+        }
+    }
+
+    // 3. Desglose histórico por tipo de documento
+    $sqlPorTipo = "SELECT td.tipo_documento,
+                          COUNT(DISTINCT d.id_documento) AS cantidad_total,
+                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 1 THEN d.id_documento END) AS pendientes,
+                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 2 THEN d.id_documento END) AS cerrados"
+                  . $fromWhere
+                  . " GROUP BY td.id_tipo_doc, td.tipo_documento
+                      ORDER BY cantidad_total DESC";
+    $resTipo = ejecutarSelect($cnx, $sqlPorTipo, $params, $types);
+    $porTipo = [];
+    if (!isset($resTipo['error'])) {
+        foreach ($resTipo as $r) {
+            $porTipo[] = [
+                'tipo_documento' => !empty($r['tipo_documento']) ? $r['tipo_documento'] : 'Sin tipo asignado',
+                'cantidad_total' => (int)$r['cantidad_total'],
+                'pendientes' => (int)$r['pendientes'],
+                'cerrados' => (int)$r['cerrados']
+            ];
+        }
+    }
+
+    // 4. Desglose histórico por responsable
+    $sqlPorResp = "SELECT u.id_usuario, u.nombre, u.apellido_p, u.apellido_m,
+                          COUNT(DISTINCT d.id_documento) AS cantidad_total,
+                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 1 THEN d.id_documento END) AS pendientes,
+                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 2 THEN d.id_documento END) AS cerrados"
+                  . $fromWhere
+                  . " GROUP BY u.id_usuario, u.nombre, u.apellido_p, u.apellido_m
+                      ORDER BY cantidad_total DESC";
+    $resResp = ejecutarSelect($cnx, $sqlPorResp, $params, $types);
+    $porResponsable = [];
+    if (!isset($resResp['error'])) {
+        foreach ($resResp as $r) {
+            $nombreResp = trim(preg_replace('/\s+/u', ' ', ($r['nombre'] ?? '') . ' ' . ($r['apellido_p'] ?? '') . ' ' . ($r['apellido_m'] ?? '')));
+            $porResponsable[] = [
+                'responsable' => $nombreResp !== '' ? $nombreResp : 'Sin responsable asignado',
+                'cantidad_total' => (int)$r['cantidad_total'],
+                'pendientes' => (int)$r['pendientes'],
+                'cerrados' => (int)$r['cerrados']
+            ];
+        }
+    }
+
+    // 5. Desglose histórico por subcontrato
+    $sqlPorSub = "SELECT sc.nombre_subcontrato,
+                         COUNT(DISTINCT d.id_documento) AS cantidad_total"
+                 . $fromWhere
+                 . " GROUP BY sc.id_subcontrato, sc.nombre_subcontrato
+                     ORDER BY cantidad_total DESC";
+    $resSub = ejecutarSelect($cnx, $sqlPorSub, $params, $types);
+    $porSubcontrato = [];
+    if (!isset($resSub['error'])) {
+        foreach ($resSub as $r) {
+            $porSubcontrato[] = [
+                'subcontrato' => !empty($r['nombre_subcontrato']) ? $r['nombre_subcontrato'] : 'Sin subcontrato',
+                'cantidad_total' => (int)$r['cantidad_total']
+            ];
+        }
+    }
+
+    return [
+        'total_historico_documentos' => (int)$totales['total_historico_documentos'],
+        'desglose_por_estado' => [
+            'Pendientes' => (int)$totales['total_pendientes'],
+            'Cerrados' => (int)$totales['total_cerrados']
+        ],
+        'desglose_por_flujo' => [
+            'Entrada' => (int)$totales['total_entrada'],
+            'Salida' => (int)$totales['total_salida']
+        ],
+        'rango_historico_fechas' => [
+            'primera_fecha_documento' => $totales['primera_fecha_historica'],
+            'ultima_fecha_documento' => $totales['ultima_fecha_registrada']
+        ],
+        'desglose_por_anio' => $porAnio,
+        'desglose_por_tipo_documento' => $porTipo,
+        'desglose_por_responsable' => $porResponsable,
+        'desglose_por_subcontrato' => $porSubcontrato
+    ];
+}
+
+/**
+ * Función para acceder y buscar documentos del contrato del usuario logueado
+ * filtrando por sus variables: responsable, remitente, destinatario, tipo, materia,
+ * número, estado, flujo, subcontrato, fechas y palabras clave.
+ */
+function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = []) {
+    $base = construirBaseWhereDocumentos($userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
+
+    $sql = "SELECT d.id_documento, d.nombre_documento, d.fecha_documento, d.fecha_recepcion, d.fecha_plazo,
+                   CASE WHEN d.id_estado_doc = 1 THEN 'Pendiente' WHEN d.id_estado_doc = 2 THEN 'Cerrado' ELSE 'Otro' END AS estado_documento,
+                   CASE WHEN d.id_flujo = 1 THEN 'Entrada' WHEN d.id_flujo = 2 THEN 'Salida' ELSE 'Otro' END AS flujo_documento,
+                   dd.num_documento, dd.num_providencia, dd.num_proceso, dd.materia, dd.antecedente, dd.incluye, dd.comentario,
+                   td.tipo_documento,
+                   dd.id_responsable,
+                   u.nombre AS resp_nombre, u.apellido_p AS resp_apellido_p, u.apellido_m AS resp_apellido_m,
+                   u.correo AS correo_responsable,
+                   dd.id_remitente,
+                   rem.nombre_entidad AS rem_nombre, rem.apellido_entidad AS rem_apellido,
+                   crem.cargo AS cargo_remitente,
+                   dd.id_destinatario,
+                   dest.nombre_entidad AS dest_nombre, dest.apellido_entidad AS dest_apellido,
+                   cdest.cargo AS cargo_destinatario,
+                   sc.nombre_subcontrato,
+                   c.nombre_contrato AS contrato_sub,
+                   cu.nombre_contrato AS contrato_usr"
+            . $base['from_joins']
+            . $base['where'];
 
     // Ordenar siempre por los documentos más recientes primero (2026 -> 2025 -> ...)
     // Sin GROUP BY en SQL para evitar incompatibilidades con ONLY_FULL_GROUP_BY; deduplicamos por id_documento en PHP.
@@ -412,7 +571,7 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
                        d.id_documento DESC
               LIMIT 50";
 
-    $rawRows = ejecutarSelect($cnx, $sql, $params, $types);
+    $rawRows = ejecutarSelect($cnx, $sql, $base['params'], $base['types']);
     if (isset($rawRows['error'])) {
         return $rawRows;
     }
@@ -574,8 +733,9 @@ Debes retornar EXCLUSIVAMENTE un objeto JSON estructurado con las siguientes cla
   - 'estado_doc': int o null (1 si pide documentos 'pendientes', 2 si pide documentos 'cerrados', null en otro caso)
   - 'flujo_doc': int o null (1 si pide documentos de 'entrada', 2 si pide documentos de 'salida', null en otro caso)
   - 'solo_mis_documentos': boolean (true SOLO si el usuario pide explícitamente 'mis documentos' en primera persona, false cuando pregunta por otro responsable del contrato como 'Jefe Asesoria')
+  - 'es_consulta_cantidad': boolean (true si el usuario pregunta por cifras, cantidades, totales, conteos, estadísticas o 'cuántos/cuántas' documentos/registros existen; false si pide ver, listar o consultar el detalle de documentos)
   - 'orden_recientes': boolean (true si pide el último documento, los últimos documentos, más recientes o nuevos)
-  - 'fecha_desde': string o null (fecha YYYY-MM-DD SOLO si el usuario especifica un año, mes o fecha concreta, ej. '2026-01-01'. Si solo pide 'el último documento' o 'los últimos documentos' sin mencionar fecha/año, pon null).
+  - 'fecha_desde': string o null (fecha YYYY-MM-DD SOLO si el usuario especifica un año, mes o fecha concreta, ej. '2026-01-01'. Si solo pide 'el último documento', 'los últimos documentos' o una cifra/cantidad histórica sin mencionar fecha/año, pon null).
   - 'fecha_hasta': string o null (fecha YYYY-MM-DD SOLO si el usuario especifica un límite de fecha concreto; de lo contrario null).
 
 Consulta del usuario: \"" . $query . "\"";
@@ -601,9 +761,15 @@ $intent = $searchParams['intent'] ?? 'general';
 $keywords = $searchParams['keywords'] ?? [];
 $filters = $searchParams['filters'] ?? [];
 
-// Si se detectaron filtros de variables de documentos (responsable, remitente, destinatario), asegurar intent document
+// Detectar si la consulta pregunta por cifras, cantidades, totales o conteos históricos
+$esConsultaCantidad = !empty($filters['es_consulta_cantidad']) ||
+    (bool)preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|total(?:es)?|conteo|contar|estad[ií]sticas?|n[uú]mero\s+total|n[uú]mero\s+de\s+documentos|registro\s+hist[oó]rico)\b/iu', $query);
+$filters['es_consulta_cantidad'] = $esConsultaCantidad;
+
+// Si se detectaron filtros de variables de documentos (responsable, remitente, destinatario) o consulta de cantidades de documentos, asegurar intent document
 if (!empty($customVars['id_responsable']) || !empty($customVars['id_remitente']) || !empty($customVars['id_destinatario']) ||
-    !empty($filters['responsable']) || !empty($filters['remitente']) || !empty($filters['destinatario'])) {
+    !empty($filters['responsable']) || !empty($filters['remitente']) || !empty($filters['destinatario']) ||
+    $esConsultaCantidad) {
     $intent = 'document';
 }
 
@@ -618,7 +784,10 @@ $stopwords = [
     'registrados', 'cargado', 'cargados', 'sistema', 'sgd', 'axioma', 'pendiente', 'pendientes',
     'cerrado', 'cerrados', 'entrada', 'salida', 'fecha', 'fechas', 'mes', 'año', 'anio', 'cuales', 'cuáles', 'son', 'hay',
     'responsable', 'responsables', 'remitente', 'remitentes', 'destinatario', 'destinatarios', 'enviado', 'enviados', 'dirigido', 'dirigidos',
-    'tiene', 'tienen', 'como'
+    'tiene', 'tienen', 'como', 'cuanto', 'cuantos', 'cuanta', 'cuantas', 'cuánto', 'cuántos', 'cuánta', 'cuántas',
+    'cantidad', 'cantidades', 'cifra', 'cifras', 'total', 'totales', 'historico', 'historicos', 'histórico', 'históricos',
+    'historica', 'historicas', 'histórica', 'históricas', 'registro', 'registros', 'estadistica', 'estadisticas',
+    'estadística', 'estadísticas', 'conteo', 'contar', 'numero', 'numeros', 'número', 'números', 'existen'
 ];
 $filteredKeywords = [];
 if (is_array($keywords)) {
@@ -631,11 +800,11 @@ if (is_array($keywords)) {
 }
 $keywords = $filteredKeywords;
 
-// Si el usuario consulta por "último documento" / "últimos documentos" / "recientes" sin haber escrito un año o mes explícito,
-// limpiamos fecha_desde / fecha_hasta para asegurar que el ORDER BY devuelva los de 2026+.
+// Si el usuario consulta por "último documento" / "últimos documentos" / "recientes" o por cifras/cantidades históricas
+// sin haber escrito un año o mes explícito, limpiamos fecha_desde / fecha_hasta para abarcar todo el registro histórico.
 $queryLower = mb_strtolower($query);
 $mentionsExplicitYearOrMonth = preg_match('/\b(20\d{2}|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/u', $queryLower);
-if (!$mentionsExplicitYearOrMonth && preg_match('/(últim|ultim|recient|nuev)/u', $queryLower)) {
+if (!$mentionsExplicitYearOrMonth && (preg_match('/(últim|ultim|recient|nuev)/u', $queryLower) || $esConsultaCantidad)) {
     $filters['fecha_desde'] = null;
     $filters['fecha_hasta'] = null;
 }
@@ -673,7 +842,7 @@ if ($intent === 'contract' || $intent === 'general') {
     }
 }
 
-if ($intent === 'user' || $intent === 'general') {
+if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad) {
     $usuariosFormateados = [];
     foreach ($usuariosContrato as $uc) {
         $nombreCompletoU = trim(preg_replace('/\s+/u', ' ', ($uc['nombre'] ?? '') . ' ' . ($uc['apellido_p'] ?? '') . ' ' . ($uc['apellido_m'] ?? '')));
@@ -708,12 +877,23 @@ if ($intent === 'user' || $intent === 'general') {
 }
 
 if ($intent === 'document' || $intent === 'general') {
-    $resDocs = buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
-    if (!isset($resDocs['error'])) {
-        $dbResults['documentos'] = $resDocs;
+    if ($esConsultaCantidad) {
+        // Cuando pregunta por cifras y cantidades: contar el registro histórico completo y NO retornar el detalle de documentos
+        $resConteo = contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
+        if (!isset($resConteo['error'])) {
+            $resConteo['total_usuarios_activos_contrato'] = count($usuariosContrato);
+            $dbResults['estadisticas_historicas_documentos'] = $resConteo;
+        } else {
+            $dbResults['error_consulta_documentos'] = $resConteo['error'];
+        }
     } else {
-        $dbResults['documentos'] = [];
-        $dbResults['error_consulta_documentos'] = $resDocs['error'];
+        $resDocs = buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
+        if (!isset($resDocs['error'])) {
+            $dbResults['documentos'] = $resDocs;
+        } else {
+            $dbResults['documentos'] = [];
+            $dbResults['error_consulta_documentos'] = $resDocs['error'];
+        }
     }
 }
 
@@ -721,6 +901,22 @@ if ($intent === 'document' || $intent === 'general') {
 mysqli_close($cnx);
 
 // PASO 3: Construcción de la respuesta final con Gemini (RAG)
+$instruccionesEspecificas = $esConsultaCantidad
+    ? "3. CONSULTA DE CIFRAS Y CANTIDADES (REGISTRO HISTÓRICO): El usuario está consultando por cifras, cantidades o totales. Responde utilizando EXCLUSIVAMENTE los conteos del registro histórico contenidos en `estadisticas_historicas_documentos` (`total_historico_documentos`, `desglose_por_estado`, `desglose_por_flujo`, `desglose_por_anio`, `desglose_por_tipo_documento`, `desglose_por_responsable`, `desglose_por_subcontrato`, `rango_historico_fechas`).
+4. PROHIBIDO RETORNAR DETALLE DE DOCUMENTOS: En consultas de cifras y cantidades, entrega únicamente los números, totales y desgloses estadísticos solicitados. NO listes ni devuelvas el detalle individual de documentos (no incluyas números de documento individuales, materias ni enlaces de descarga)."
+    : "3. SI PIDE 'EL ÚLTIMO DOCUMENTO' (en singular): Muestra en primer lugar y de forma destacada el documento más reciente que encabeza la lista `documentos` (el primer elemento `documentos[0]`, que ya viene ordenado del más reciente de 2026 hacia atrás).
+4. VARIABLES DE DOCUMENTOS: Cuando muestres uno o más documentos, incluye sus datos clave de forma ordenada:
+   - **N° Documento / Providencia** (`num_documento` / `num_providencia`)
+   - **Tipo de Documento** (`tipo_documento`)
+   - **Materia** (`materia`)
+   - **Fecha del Documento** (`fecha_documento`) y **Fecha de Recepción** (`fecha_recepcion`)
+   - **Estado** (`estado_documento`) y **Flujo** (`flujo_documento`)
+   - **Responsable** (`responsable`)
+   - **Remitente** (`remitente` y `cargo_remitente` si aplica)
+   - **Destinatario** (`destinatario` y `cargo_destinatario` si aplica)
+5. ENLACES DE DESCARGA: Siempre que menciones un documento específico, incluye su enlace de descarga directa en formato Markdown exactamente así: `[Descargar Documento](negocio/descargarDocumento.php?idDocumento=ID)` donde ID es el `id_documento` correspondiente.
+6. Si la lista `documentos` está vacía para ese filtro, indícale amablemente que no se encontraron documentos con ese criterio dentro de su contrato y menciónale los responsables disponibles en `responsables_del_contrato` si buscaba por responsable.";
+
 $stage2Prompt = "Eres el asistente de Inteligencia Artificial del Sistema de Gestión Documental (SGD) de Axioma.
 Fecha actual del sistema: {$fechaActual} (Año {$anioActual}).
 Usuario en sesión: {$userFullName} (Usuario: {$userLoginName}).
@@ -736,18 +932,7 @@ Datos reales del sistema (filtrados por el contrato \"{$userContractName}\" del 
 Instrucciones obligatorias para elaborar tu respuesta:
 1. Responde en español neutro de forma directa y clara. Si el usuario cometió algún error menor de ortografía o tilde al escribir el nombre de un responsable, remitente, destinatario o término (por ejemplo, 'Jefe Asesoria' por 'Jefe Asesoría'), entiéndelo con naturalidad y muéstrale directamente la información encontrada.
 2. RESPONSABLES Y USUARIOS DEL CONTRATO: Ten en cuenta que todos los usuarios listados en `responsables_del_contrato` (como 'Jefe Asesoria', 'Encargada De Gestion', 'Jefe Area Proyectos', 'Jefe Area Construccion', 'Asesor Legal', etc.) SON responsables que pertenecen dentro del contrato asignado al usuario (\"{$userContractName}\"). NUNCA rechaces ni bloquees consultas sobre ellos por motivos de seguridad o permisos.
-3. SI PIDE 'EL ÚLTIMO DOCUMENTO' (en singular): Muestra en primer lugar y de forma destacada el documento más reciente que encabeza la lista `documentos` (el primer elemento `documentos[0]`, que ya viene ordenado del más reciente de 2026 hacia atrás).
-4. VARIABLES DE DOCUMENTOS: Cuando muestres uno o más documentos, incluye sus datos clave de forma ordenada:
-   - **N° Documento / Providencia** (`num_documento` / `num_providencia`)
-   - **Tipo de Documento** (`tipo_documento`)
-   - **Materia** (`materia`)
-   - **Fecha del Documento** (`fecha_documento`) y **Fecha de Recepción** (`fecha_recepcion`)
-   - **Estado** (`estado_documento`) y **Flujo** (`flujo_documento`)
-   - **Responsable** (`responsable`)
-   - **Remitente** (`remitente` y `cargo_remitente` si aplica)
-   - **Destinatario** (`destinatario` y `cargo_destinatario` si aplica)
-5. ENLACES DE DESCARGA: Siempre que menciones un documento, incluye su enlace de descarga directa en formato Markdown exactamente así: `[Descargar Documento](negocio/descargarDocumento.php?idDocumento=ID)` donde ID es el `id_documento` correspondiente.
-6. Si la lista `documentos` está vacía para ese filtro, indícale amablemente que no se encontraron documentos con ese criterio dentro de su contrato y menciónale los responsables disponibles en `responsables_del_contrato` si buscaba por responsable.
+{$instruccionesEspecificas}
 7. NO utilices jerga técnica de base de datos ni menciones consultas SQL o estructuras JSON.";
 
 $stage2Res = llamarGemini($apiKey, $stage2Prompt);

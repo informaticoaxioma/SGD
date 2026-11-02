@@ -1155,20 +1155,23 @@ class Documento {
 
                     $sql = "SELECT id_documento,d.nombre_documento,d.fecha_documento,d.id_estado_doc,d.id_flujo,d.id_subcontrato,d.fecha_plazo,"
                             . "d.fecha_recepcion,dd.id_tipo_doc,dd.num_documento,dd.num_providencia,dd.num_proceso,dd.materia,dd.id_responsable,"
-                            . "dd.id_remitente,dd.id_destinatario "
+                            . "dd.id_remitente,dd.id_destinatario,"
+                            . "CASE WHEN d.id_estado_doc = 2 THEN COALESCE(NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'), d.fecha_documento) ELSE NULL END AS fecha_cierre "
                             . " FROM documento d JOIN detalle_documento dd USING(id_documento) ";
                 } else {
 
                     $sql = "SELECT id_documento,d.nombre_documento,d.fecha_documento,d.id_estado_doc,d.id_flujo,d.id_subcontrato,d.fecha_plazo,"
                             . "d.fecha_recepcion,dd.id_tipo_doc,dd.num_documento,dd.num_providencia,dd.num_proceso,dd.materia,dd.id_responsable,"
-                            . "dd.id_remitente,dd.id_destinatario "
+                            . "dd.id_remitente,dd.id_destinatario,"
+                            . "CASE WHEN d.id_estado_doc = 2 THEN COALESCE(NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'), d.fecha_documento) ELSE NULL END AS fecha_cierre "
                             . " FROM documento d JOIN detalle_documento dd USING(id_documento) WHERE dd.num_documento !=''  ";
                 }
                 //QUERY INCOMPLETA QUE SE RELLENARA A MEDIDA QUE SE INGRESEN LOS DATOS DE LOS FILTROS
             } else {
                 $sql = "SELECT id_documento,d.nombre_documento,d.fecha_documento,d.id_estado_doc,d.id_flujo,id_subcontrato,d.fecha_plazo,"
                         . "d.fecha_recepcion,dd.id_tipo_doc,dd.num_documento,dd.num_providencia,dd.num_proceso,dd.materia,dd.id_responsable,"
-                        . "dd.id_remitente,dd.id_destinatario "
+                        . "dd.id_remitente,dd.id_destinatario,"
+                        . "CASE WHEN d.id_estado_doc = 2 THEN COALESCE(NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'), d.fecha_documento) ELSE NULL END AS fecha_cierre "
                         . " FROM detalle_documento dd JOIN documento d USING(id_documento) JOIN subcontrato sc USING(id_subcontrato)"
                         . " WHERE sc.id_contrato='$idContrato' "; //QUERY INCOMPLETA QUE SE RELLENARA A MEDIDA QUE SE INGRESEN LOS DATOS DE LOS FILTROS
             }
@@ -1366,7 +1369,8 @@ class Documento {
 
                     $sql = "SELECT id_documento,d.nombre_documento,d.fecha_documento,d.id_estado_doc,d.id_flujo,d.id_subcontrato,d.fecha_plazo,"
                             . "d.fecha_recepcion,dd.id_tipo_doc,dd.num_documento,dd.num_providencia,dd.num_proceso,dd.materia,dd.id_responsable,"
-                            . "dd.id_remitente,dd.id_destinatario "
+                            . "dd.id_remitente,dd.id_destinatario,"
+                            . "CASE WHEN d.id_estado_doc = 2 THEN COALESCE(NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'), d.fecha_documento) ELSE NULL END AS fecha_cierre "
                             . " FROM documento d JOIN detalle_documento dd USING(id_documento) ";
                 } else {
 //echo "admin2";
@@ -1387,7 +1391,8 @@ class Documento {
                             ."dd.materia, "
                             ."dd.id_responsable, "
                             ."dd.id_remitente, "
-                            ."dd.id_destinatario "
+                            ."dd.id_destinatario, "
+                            ."CASE WHEN d.id_estado_doc = 2 THEN COALESCE(NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'), d.fecha_documento) ELSE NULL END AS fecha_cierre "
                         ."FROM subcontrato s "
                         ."LEFT JOIN contrato c ON s.id_contrato = c.id_contrato "
                         ."LEFT JOIN documento d ON s.id_subcontrato =d.id_subcontrato "
@@ -1398,7 +1403,8 @@ class Documento {
             } else {
                 $sql = "SELECT id_documento,d.nombre_documento,d.fecha_documento,d.id_estado_doc,d.id_flujo,id_subcontrato,d.fecha_plazo,"
                         . "d.fecha_recepcion,dd.id_tipo_doc,dd.num_documento,dd.num_providencia,dd.num_proceso,dd.materia,dd.id_responsable,"
-                        . "dd.id_remitente,dd.id_destinatario "
+                        . "dd.id_remitente,dd.id_destinatario,"
+                        . "CASE WHEN d.id_estado_doc = 2 THEN COALESCE(NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'), d.fecha_documento) ELSE NULL END AS fecha_cierre "
                         . " FROM detalle_documento dd JOIN documento d USING(id_documento) JOIN subcontrato sc USING(id_subcontrato)"
                         . " WHERE sc.id_contrato='$idContrato' "; //QUERY INCOMPLETA QUE SE RELLENARA A MEDIDA QUE SE INGRESEN LOS DATOS DE LOS FILTROS
             }

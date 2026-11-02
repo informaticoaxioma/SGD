@@ -122,6 +122,19 @@ $(document).ready(function () {
                                   {
                                     targets: 4,
                                     render: $.fn.dataTable.render.moment('YYYY-MM-DD', 'DD-MM-YYYY')
+                                  } ,
+                                  {
+                                    targets: 5,
+                                    render: function(data, type, row) {
+                                        if (!data || data === '' || data === '0000-00-00') {
+                                            return '';
+                                        }
+                                        if (window.moment) {
+                                            var m = window.moment(data, 'YYYY-MM-DD', true);
+                                            return m.isValid() ? m.format('DD-MM-YYYY') : data;
+                                        }
+                                        return data;
+                                    }
                                   }]
                             } );
                         //$("#tablaResultadoBusqueda").dataTable();

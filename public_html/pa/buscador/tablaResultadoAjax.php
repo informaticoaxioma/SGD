@@ -8,6 +8,7 @@
             <th>Fecha Documento</th>
             <th>Fecha Recepci&oacute;n</th>
             <th>Fecha Plazo</th>
+            <th>fecha_cierre</th>
             <th>Tipo Documento</th>
             <th>Materia</th>
             <th>Remitente</th>
@@ -41,6 +42,7 @@
                     <td><?php echo $serviceDocumento->formatoFecha($d['fecha_documento']); ?></td>
                     <td><?php echo $serviceDocumento->formatoFecha($d['fecha_recepcion']); ?></td>
                     <td><?php echo $serviceDocumento->formatoFecha($d['fecha_plazo']); ?></td>
+                    <td><?php echo ($d['id_estado_doc'] == 2) ? ((!empty($d['fecha_cierre']) && $d['fecha_cierre'] != '0000-00-00') ? $serviceDocumento->formatoFecha($d['fecha_cierre']) : $serviceDocumento->formatoFecha($d['fecha_documento'])) : ''; ?></td>
                     <td><?php echo $tipoDoc->getTipoDocumento(); ?></td>
                     <td class="text-justify"><?php echo $d['materia']; ?></td>
                     <td><?php echo $remitente->getNombreEntidad() . " " . $remitente->getApellidoEntidad(); ?></td>

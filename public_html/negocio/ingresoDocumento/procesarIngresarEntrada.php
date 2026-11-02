@@ -13,8 +13,12 @@ require_once '../../data/Entidad.php';
 require_once '../../data/Cargo.php';
 require_once '../../data/Seguimiento.php';
 require_once '../../data/Mail.php';
-require_once '/var/www/sgd.axioma.cl/public_html/pa/gg/Controllers/DetalleDocumentoController.php';
-require_once '/var/www/sgd.axioma.cl/public_html/pa/gg/Controllers/CorresponsableController.php';
+require_once file_exists('/var/www/sgd.axioma.cl/public_html/pa/gg/Controllers/DetalleDocumentoController.php')
+    ? '/var/www/sgd.axioma.cl/public_html/pa/gg/Controllers/DetalleDocumentoController.php'
+    : '../../pa/gg/Controllers/DetalleDocumentoController.php';
+require_once file_exists('/var/www/sgd.axioma.cl/public_html/pa/gg/Controllers/CorresponsableController.php')
+    ? '/var/www/sgd.axioma.cl/public_html/pa/gg/Controllers/CorresponsableController.php'
+    : '../../pa/gg/Controllers/CorresponsableController.php';
 
 
 $usuarioSession = new Usuario();
@@ -254,24 +258,34 @@ if ($_POST) {
         unset($_SESSION['documentosRelacionadosEntrada']);
         unset($documentosRelacionados);
         $serviceMail = new Mail();
-        $titulo = "Asignación de documento de entrada";
-        $asunto = "Se ha asignado un documento de entrada. <br/>"
-        . "<strong>Número providencia:</strong> $numeroProv <br/>"
-        . "<strong>Número proceso:</strong> $numeroProceso <br/>"
-        . "<strong>Número Documento:</strong> $numeroDoc <br/>"
-        . "<strong>Materia: </strong>$materia <br/>"
-        . "<strong>Incluye:</strong> $incluye <br/>"
-        . "<strong>Comentarios: </strong>$comentarios <br/>"
-        . "<strong>Fecha recepción: </strong> $fechaRecepcion <br/>"
-        . "<strong>Fecha Plazo: </strong>$fechaPlazo";
-        $mensaje = $serviceMail->generarBodyMailGenerico($asunto);
-        try {
-            $responsable = $serviceUsuario->getUsuarioPorId($idResponsable);
-            $correo = $responsable->getCorreo();
 
+        // Obtener datos del responsable principal
+        $responsable = $serviceUsuario->getUsuarioPorId($idResponsable);
+        $nombreResponsablePrincipal = "";
+        if (is_object($responsable) && method_exists($responsable, 'getNombre')) {
+            $nombreResponsablePrincipal = trim($responsable->getNombre() . " " . $responsable->getApellidoP() . " " . $responsable->getApellidoM());
+        }
+
+        // 1. Correo para el RESPONSABLE principal
+        $tituloResponsable = "Asignación de documento de entrada";
+        $asuntoResponsable = "Se le ha asignado un documento de entrada como <strong>Responsable</strong>. <br/>"
+            . "<strong>Rol:</strong> Responsable <br/>"
+            . "<strong>Número providencia:</strong> $numeroProv <br/>"
+            . "<strong>Número proceso:</strong> $numeroProceso <br/>"
+            . "<strong>Número Documento:</strong> $numeroDoc <br/>"
+            . "<strong>Materia: </strong>$materia <br/>"
+            . "<strong>Incluye:</strong> $incluye <br/>"
+            . "<strong>Comentarios: </strong>$comentarios <br/>"
+            . "<strong>Fecha recepción: </strong> $fechaRecepcion <br/>"
+            . "<strong>Fecha Plazo: </strong>$fechaPlazo";
+        $mensajeResponsable = $serviceMail->generarBodyMailGenerico($asuntoResponsable);
+
+        try {
+            $correo = is_object($responsable) ? $responsable->getCorreo() : "";
 
             if ($correo) {
-                $serviceMail->enviarMail($titulo, $mensaje, $correo);
+                $serviceMail->enviarMail($tituloResponsable, $mensajeResponsable, $correo);
+                $exitoOperacion = 1;
             } else {
                 // Handle the case where there's no email address
                 $exitoOperacion = 0; // Mail not sent due to missing email
@@ -284,7 +298,7 @@ if ($_POST) {
             $exitoOperacion = -1; // Other failures
         }
 
-        // Send emails to the corresponsables
+        // 2. Correo diferenciado para los CO-RESPONSABLES (Corresponsables)
         $corresponsables = [];
         if (isset($_POST['idCorresponsable'])) {
             $corresponsables = is_array($_POST['idCorresponsable'])
@@ -293,16 +307,30 @@ if ($_POST) {
         }
 
         if (!empty($corresponsables)) {
+            $tituloCorresponsable = "Asignación de documento de entrada - Corresponsable";
+            $asuntoCorresponsable = "Se le ha asignado un documento de entrada en calidad de <strong>Corresponsable</strong>. <br/>"
+                . "<strong>Rol:</strong> Corresponsable <br/>"
+                . ($nombreResponsablePrincipal !== "" ? "<strong>Responsable principal:</strong> $nombreResponsablePrincipal <br/>" : "")
+                . "<strong>Número providencia:</strong> $numeroProv <br/>"
+                . "<strong>Número proceso:</strong> $numeroProceso <br/>"
+                . "<strong>Número Documento:</strong> $numeroDoc <br/>"
+                . "<strong>Materia: </strong>$materia <br/>"
+                . "<strong>Incluye:</strong> $incluye <br/>"
+                . "<strong>Comentarios: </strong>$comentarios <br/>"
+                . "<strong>Fecha recepción: </strong> $fechaRecepcion <br/>"
+                . "<strong>Fecha Plazo: </strong>$fechaPlazo";
+            $mensajeCorresponsable = $serviceMail->generarBodyMailGenerico($asuntoCorresponsable);
+
             foreach ($corresponsables as $idUsuarioCorresponsable) {
                 try {
                     // Get the corresponsable user details using their ID
                     $corresponsable = $serviceUsuario->getUsuarioPorId($idUsuarioCorresponsable);
-                    $correoCorresponsable = $corresponsable->getCorreo();
+                    $correoCorresponsable = is_object($corresponsable) ? $corresponsable->getCorreo() : "";
 
                     // Check if the corresponsable has an email address
                     if ($correoCorresponsable) {
-                        // Send email
-                        $serviceMail->enviarMail($titulo, $mensaje, $correoCorresponsable);
+                        // Send differentiated email to corresponsable
+                        $serviceMail->enviarMail($tituloCorresponsable, $mensajeCorresponsable, $correoCorresponsable);
                     } else {
                         // Handle the case where there's no email address
                         error_log("No email address for corresponsable ID: " . $idUsuarioCorresponsable);

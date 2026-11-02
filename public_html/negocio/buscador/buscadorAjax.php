@@ -82,6 +82,7 @@ switch ($id) {
 	    echo '<th>N° Proceso</th>';
 	    echo '<th>Fecha Documento</th>';
 	    echo '<th>Fecha Plazo</th>';
+	    echo '<th>fecha_cierre</th>';
 //	    echo '<th>Vigencia</th>';
 	    echo '<th>Tipo Documento</th>';
 	    echo '<th>Materiales</th>';
@@ -111,12 +112,18 @@ $salidaFecha = $intervalFecha->format('%R%a');
 ($salidaFecha <= 2 ) ? $styleF="rojo" : $styleF="";
 
 
+            if ($d['id_estado_doc'] == 2) {
+                $fechaCierre = (!empty($d['fecha_cierre']) && $d['fecha_cierre'] != '0000-00-00') ? $d['fecha_cierre'] : $d['fecha_documento'];
+            } else {
+                $fechaCierre = '';
+            }
             echo' <tr id="' . $c . '">';
             echo "<td>" . $d['num_documento'] . "</td>";
             echo "<td>" . $d['num_providencia'] . "</td>";
             echo "<td>" . $d['num_proceso'] . "</td>";
             echo "<td>" . $d['fecha_documento'] . "</td>";
             echo "<td>" . $d['fecha_plazo'] . "</td>";
+            echo "<td>" . $fechaCierre . "</td>";
 //	    echo "<td>";
 		  if($d['fecha_plazo'] <> ''){
 			//echo $salidaFecha;
