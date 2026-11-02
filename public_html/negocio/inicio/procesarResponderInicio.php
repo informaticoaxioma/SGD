@@ -27,7 +27,7 @@ if ($_POST) {
     $asunto = htmlspecialchars($_POST['asunto']);
     $detalle = htmlspecialchars($_POST['detalle']);
 
-    $estadoDocumento = htmlspecialchars($_POST['cerrarDoc']);
+    $estadoDocumento = isset($_POST['cerrarDoc']) ? htmlspecialchars($_POST['cerrarDoc']) : "";
 
     $serviceBitacora = new Bitacora(); //instanceando servicio
     $bitacora = new Bitacora(); //instanceando bitacora
@@ -38,7 +38,11 @@ if ($_POST) {
     $bitacora->setDetalleRespuesta($detalle);
     $bitacora->setIdDocumento($idDocumento);
 
-    if ($estadoDocumento == 2) {//cambiar el estado del documento a cerrado
+    $idPerfil = method_exists($usuarioSession, 'getIdPerfil') ? (int)$usuarioSession->getIdPerfil() : (isset($_SESSION['id_perfil']) ? (int)$_SESSION['id_perfil'] : 0);
+    $idContrato = method_exists($usuarioSession, 'getIdContrato') ? (int)$usuarioSession->getIdContrato() : (isset($_SESSION['id_contrato']) ? (int)$_SESSION['id_contrato'] : 0);
+    $ocultarCierre = ($idPerfil === 7 && $idContrato === 77);
+
+    if ($estadoDocumento == 2 && !$ocultarCierre) {//cambiar el estado del documento a cerrado
         $documento = new Documento();
         $documento->setIdDocumento($idDocumento);
         $documento->setIdEstadoDoc($estadoDocumento);

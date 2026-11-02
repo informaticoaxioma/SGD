@@ -11,6 +11,7 @@ $conn = new mysqli($servername, $username, $password, $dbname);
 if ($conn->connect_error) {
     die("Conexión fallida: " . $conn->connect_error);
 }
+$conn->set_charset("utf8");
 
 // Obtener la fecha actual y la fecha hace 12 meses
 $currentDate = date("Y-m-d");

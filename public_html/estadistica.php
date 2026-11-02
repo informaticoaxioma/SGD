@@ -21,6 +21,7 @@ class conexion {
             echo "algo va mal con la conexion";
             die();
         }
+        $this->conexion->set_charset("utf8");
 
     }
 

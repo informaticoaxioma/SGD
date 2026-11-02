@@ -10,6 +10,7 @@ $conn = new mysqli($servername, $username, $password, $dbname);
 if ($conn->connect_error) {
  die("Connection failed: " . $conn->connect_error);
 }
+$conn->set_charset("utf8");
 
 $sql = "SELECT c.id_contrato,s.id_subcontrato AS id,c.nombre_contrato,s.nombre_subcontrato, count(*) AS total ,
         (

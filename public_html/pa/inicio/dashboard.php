@@ -16,6 +16,8 @@ class Consultas
         if ($this->conn->connect_error) {
             die("Connection failed: " . $this->conn->connect_error);
         }
+
+        $this->conn->set_charset("utf8");
     }
 
     public function __destruct()
@@ -99,17 +101,18 @@ class Consultas
     public function getDocumentosPendientesPorUsuario($id)
     {
         $sql = "SELECT
-				CONCAT(u.nombre,' ', u.apellido_p,' ', u.apellido_m) AS nombre,
+                CONCAT(u.nombre,' ', u.apellido_p,' ', u.apellido_m) AS nombre,
                 COUNT(d.id_estado_doc) AS total
                 FROM documento d
                 INNER JOIN detalle_documento de ON de.id_documento = d.id_documento
                 INNER JOIN usuario u ON u.id_usuario = de.id_responsable
-                WHERE u.id_contrato = " . $id . " AND d.id_estado_doc <> 2 GRoup by u.id_usuario;";
+                WHERE u.id_contrato = " . $id . " AND d.id_estado_doc <> 2 
+                GROUP BY u.id_usuario, u.nombre, u.apellido_p, u.apellido_m;";
         error_log("Query de getDocumentosPendientesPorUsuario: " . $sql);
         $result = $this->conn->query($sql);
         $data = [];
 
-        if ($result->num_rows > 0) {
+        if ($result && $result->num_rows > 0) {
             while ($row = $result->fetch_assoc()) {
                 $data[] = $row;
             }
@@ -1019,7 +1022,7 @@ $getUserPorContrato = $controller->getUserPorContrato($usuario[0]['id_contrato']
     <?php if(!empty($totalPendientesPorUsuario)) {
         echo "<script>var datosPendientesPorUsuario = " . json_encode($totalPendientesPorUsuario, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE) . "; console.log('datosPendientesPorUsuario:', datosPendientesPorUsuario);</script>";
     } else {
-        echo "<script>console.error('datosPendientesPorUsuario no está definido porque está vacío o nulo.');</script>";
+        echo "<script>var datosPendientesPorUsuario = []; console.warn('datosPendientesPorUsuario está vacío o nulo.');</script>";
     } ?>
     
     <?php echo "<script>var datosPorTipoDocumento = " . json_encode($totalPorTipoDocumento, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE) . "; console.log('datosPorTipoDocumento:', datosPorTipoDocumento);</script>"; ?>

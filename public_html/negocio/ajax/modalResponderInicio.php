@@ -34,15 +34,21 @@
                     <textarea id="detalle" name="detalle" class="form-control noResize" rows="5" placeholder="Ingrese detalle..."></textarea>
                 </div>
             </div>
-            <div class="form-group">
-                <div class="col-sm-offset-3 col-sm-8">
-                    <div class="checkbox">
-                        <label>
-                            <input id="cerrarDoc" name="cerrarDoc" type="checkbox" value="2" <?php echo $documento[0]['id_estado_doc'] == 2 ? 'Checked' : ''; ?>>&nbsp;Marcar para cerrar registro de documento.<!--el valor  2 es el valor de cerrado en la base de datos -->
-                        </label>
-                    </div>
-                </div>
-            </div>
+            <?php
+            $idPerfil = method_exists($usuarioSession, 'getIdPerfil') ? (int)$usuarioSession->getIdPerfil() : (isset($_SESSION['id_perfil']) ? (int)$_SESSION['id_perfil'] : 0);
+            $idContrato = method_exists($usuarioSession, 'getIdContrato') ? (int)$usuarioSession->getIdContrato() : (isset($_SESSION['id_contrato']) ? (int)$_SESSION['id_contrato'] : 0);
+            $ocultarCierre = ($idPerfil === 7 && $idContrato === 77);
+            if (!$ocultarCierre): ?>
+                        <div class="form-group">
+                            <div class="col-sm-offset-3 col-sm-8">
+                                <div class="checkbox">
+                                    <label>
+                                        <input id="cerrarDoc" name="cerrarDoc" type="checkbox" value="2" <?php echo $documento[0]['id_estado_doc'] == 2 ? 'checked' : ''; ?>>&nbsp;Marcar para cerrar registro de documento.
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+            <?php endif; ?>
             <div class="form-group">
                 <label for="btnResponder" class="col-sm-3 control-label"></label>
                 <div class="col-sm-2">

@@ -41,6 +41,8 @@ class ConexionCloud {
                 return $this->error = "Error, no se ha podido conectar a la base de datos";
             }
 
+            mysqli_set_charset($this->conexion_id, 'utf8');
+
             return $this->conexion_id; //retornando link de la conexion
         } catch (Exception $e) {
             echo $e->getMessage();

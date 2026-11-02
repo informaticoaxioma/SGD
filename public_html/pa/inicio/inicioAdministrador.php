@@ -16,6 +16,8 @@ class Consultas
         if ($this->conn->connect_error) {
             die("Connection failed: " . $this->conn->connect_error);
         }
+
+        $this->conn->set_charset("utf8");
     }
 
     public function __destruct()
