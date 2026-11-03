@@ -1,5 +1,6 @@
 <?php
 header('Content-Type: application/json; charset=utf-8');
+@set_time_limit(120);
 
 require_once '../../data/config_ai.php';
 require_once '../../data/Conexion.php';
@@ -12,6 +13,7 @@ if (!isset($_SESSION['usuario'])) {
 }
 
 $usuarioSession = $_SESSION['usuario'];
+session_write_close();
 $userId = (int)$usuarioSession->getIdUsuario();
 $userProfile = (int)$usuarioSession->getIdPerfil();
 $userContractId = (int)$usuarioSession->getIdContrato();
@@ -343,18 +345,31 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
         $types .= "sss";
     }
 
-    if (!empty($filters['fecha_desde'])) {
-        $where .= " AND (d.fecha_documento >= ? OR d.fecha_recepcion >= ?)";
-        $params[] = $filters['fecha_desde'];
-        $params[] = $filters['fecha_desde'];
-        $types .= "ss";
+    // Expresión de fecha efectiva del documento (usa fecha_documento y si es 0000-00-00 o nula usa fecha_recepcion)
+    $fechaEfectivaSql = "COALESCE(NULLIF(d.fecha_documento, '0000-00-00'), NULLIF(d.fecha_recepcion, '0000-00-00'))";
+
+    if (!empty($filters['anio']) && (int)$filters['anio'] >= 1990 && (int)$filters['anio'] <= 2100) {
+        $where .= " AND YEAR($fechaEfectivaSql) = ?";
+        $params[] = (int)$filters['anio'];
+        $types .= "i";
     }
 
-    if (!empty($filters['fecha_hasta'])) {
-        $where .= " AND (d.fecha_documento <= ? OR d.fecha_recepcion <= ?)";
-        $params[] = $filters['fecha_hasta'];
-        $params[] = $filters['fecha_hasta'];
-        $types .= "ss";
+    if (!empty($filters['mes']) && (int)$filters['mes'] >= 1 && (int)$filters['mes'] <= 12) {
+        $where .= " AND MONTH($fechaEfectivaSql) = ?";
+        $params[] = (int)$filters['mes'];
+        $types .= "i";
+    }
+
+    if (empty($filters['anio']) && !empty($filters['fecha_desde']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', trim((string)$filters['fecha_desde']))) {
+        $where .= " AND $fechaEfectivaSql >= ?";
+        $params[] = trim((string)$filters['fecha_desde']);
+        $types .= "s";
+    }
+
+    if (empty($filters['anio']) && !empty($filters['fecha_hasta']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', trim((string)$filters['fecha_hasta']))) {
+        $where .= " AND $fechaEfectivaSql <= ?";
+        $params[] = trim((string)$filters['fecha_hasta']);
+        $types .= "s";
     }
 
     // 7. Búsqueda por palabras clave generales sobre todas las variables del documento
@@ -362,7 +377,9 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
                             !empty($responsableFiltro) || !empty($filters['remitente']) || !empty($filters['destinatario']) ||
                             !empty($filters['tipo_documento']) || !empty($filters['subcontrato']) || !empty($filters['materia']) ||
                             !empty($filters['doc_nombre']) || !empty($filters['doc_numero']) ||
-                            !empty($filters['fecha_desde']) || !empty($filters['fecha_hasta']);
+                            !empty($filters['anio']) || !empty($filters['mes']) ||
+                            !empty($filters['fecha_desde']) || !empty($filters['fecha_hasta']) ||
+                            !empty($filters['es_consulta_cantidad']);
 
     if (!$hasSpecificVarFilter && !empty($keywords)) {
         $orConds = [];
@@ -399,8 +416,9 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
 }
 
 /**
- * Cuenta el registro histórico completo de documentos (cifras y cantidades)
- * sin retornar el detalle individual de documentos.
+ * Cuenta y clasifica el registro histórico completo de documentos (cifras y cantidades)
+ * por mes, año, tipo de documento, estado, flujo, responsable y subcontrato,
+ * en una sola consulta rápida sin retornar el detalle individual de documentos.
  */
 function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = []) {
     $base = construirBaseWhereDocumentos($userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
@@ -408,126 +426,239 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
     $params = $base['params'];
     $types = $base['types'];
 
-    // 1. Resumen total histórico
-    $sqlResumen = "SELECT COUNT(DISTINCT d.id_documento) AS total_historico_documentos,
-                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 1 THEN d.id_documento END) AS total_pendientes,
-                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 2 THEN d.id_documento END) AS total_cerrados,
-                          COUNT(DISTINCT CASE WHEN d.id_flujo = 1 THEN d.id_documento END) AS total_entrada,
-                          COUNT(DISTINCT CASE WHEN d.id_flujo = 2 THEN d.id_documento END) AS total_salida,
-                          MIN(NULLIF(d.fecha_documento, '0000-00-00')) AS primera_fecha_historica,
-                          MAX(NULLIF(d.fecha_documento, '0000-00-00')) AS ultima_fecha_registrada"
-                  . $fromWhere;
+    $sql = "SELECT d.id_documento,
+                   d.fecha_documento,
+                   d.fecha_recepcion,
+                   d.id_estado_doc,
+                   d.id_flujo,
+                   td.tipo_documento,
+                   u.nombre AS resp_nombre, u.apellido_p AS resp_apellido_p, u.apellido_m AS resp_apellido_m,
+                   sc.nombre_subcontrato"
+           . $fromWhere;
 
-    $resResumen = ejecutarSelect($cnx, $sqlResumen, $params, $types);
-    if (isset($resResumen['error'])) {
-        return ['error' => $resResumen['error']];
+    $rawRows = ejecutarSelect($cnx, $sql, $params, $types);
+    if (isset($rawRows['error'])) {
+        return ['error' => $rawRows['error']];
     }
 
-    $totales = $resResumen[0] ?? [
-        'total_historico_documentos' => 0,
-        'total_pendientes' => 0,
-        'total_cerrados' => 0,
-        'total_entrada' => 0,
-        'total_salida' => 0,
-        'primera_fecha_historica' => null,
-        'ultima_fecha_registrada' => null
+    $nombresMeses = [
+        1 => 'Enero', 2 => 'Febrero', 3 => 'Marzo', 4 => 'Abril',
+        5 => 'Mayo', 6 => 'Junio', 7 => 'Julio', 8 => 'Agosto',
+        9 => 'Septiembre', 10 => 'Octubre', 11 => 'Noviembre', 12 => 'Diciembre'
     ];
 
-    // 2. Desglose histórico por año
-    $sqlPorAnio = "SELECT YEAR(NULLIF(d.fecha_documento, '0000-00-00')) AS anio,
-                          COUNT(DISTINCT d.id_documento) AS cantidad_total,
-                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 1 THEN d.id_documento END) AS pendientes,
-                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 2 THEN d.id_documento END) AS cerrados"
-                  . $fromWhere
-                  . " GROUP BY YEAR(NULLIF(d.fecha_documento, '0000-00-00'))
-                      ORDER BY anio DESC";
-    $resAnio = ejecutarSelect($cnx, $sqlPorAnio, $params, $types);
-    $porAnio = [];
-    if (!isset($resAnio['error'])) {
-        foreach ($resAnio as $r) {
-            $porAnio[] = [
-                'anio' => $r['anio'] !== null ? (int)$r['anio'] : 'Sin fecha',
-                'cantidad_total' => (int)$r['cantidad_total'],
-                'pendientes' => (int)$r['pendientes'],
-                'cerrados' => (int)$r['cerrados']
+    $seenIds = [];
+    $totalHistorico = 0;
+    $totalPendientes = 0;
+    $totalCerrados = 0;
+    $totalEntrada = 0;
+    $totalSalida = 0;
+    $primeraFecha = null;
+    $ultimaFecha = null;
+
+    $mapAnio = [];
+    $mapMes = [];
+    $mapTipo = [];
+    $mapResp = [];
+    $mapSub = [];
+
+    // Si se filtró por un año específico (ej. 2026) y no por un único mes, pre-inicializamos los 12 meses de ese año
+    $anioFiltro = (!empty($filters['anio']) && (int)$filters['anio'] >= 1990) ? (int)$filters['anio'] : null;
+    if ($anioFiltro !== null && empty($filters['mes'])) {
+        for ($m = 1; $m <= 12; $m++) {
+            $ymKey = sprintf('%04d-%02d', $anioFiltro, $m);
+            $mapMes[$ymKey] = [
+                'anio' => $anioFiltro,
+                'mes_numero' => $m,
+                'mes_nombre' => $nombresMeses[$m],
+                'periodo' => $nombresMeses[$m] . ' ' . $anioFiltro,
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0,
+                'entrada' => 0,
+                'salida' => 0,
+                'por_tipo_documento' => []
             ];
         }
     }
 
-    // 3. Desglose histórico por tipo de documento
-    $sqlPorTipo = "SELECT td.tipo_documento,
-                          COUNT(DISTINCT d.id_documento) AS cantidad_total,
-                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 1 THEN d.id_documento END) AS pendientes,
-                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 2 THEN d.id_documento END) AS cerrados"
-                  . $fromWhere
-                  . " GROUP BY td.id_tipo_doc, td.tipo_documento
-                      ORDER BY cantidad_total DESC";
-    $resTipo = ejecutarSelect($cnx, $sqlPorTipo, $params, $types);
-    $porTipo = [];
-    if (!isset($resTipo['error'])) {
-        foreach ($resTipo as $r) {
-            $porTipo[] = [
-                'tipo_documento' => !empty($r['tipo_documento']) ? $r['tipo_documento'] : 'Sin tipo asignado',
-                'cantidad_total' => (int)$r['cantidad_total'],
-                'pendientes' => (int)$r['pendientes'],
-                'cerrados' => (int)$r['cerrados']
+    foreach ($rawRows as $r) {
+        $idDoc = (int)$r['id_documento'];
+        if (isset($seenIds[$idDoc])) {
+            continue;
+        }
+        $seenIds[$idDoc] = true;
+        $totalHistorico++;
+
+        $estado = (int)$r['id_estado_doc'];
+        $flujo = (int)$r['id_flujo'];
+        $esPendiente = ($estado === 1);
+        $esCerrado = ($estado === 2);
+        $esEntrada = ($flujo === 1);
+        $esSalida = ($flujo === 2);
+
+        if ($esPendiente) $totalPendientes++;
+        if ($esCerrado) $totalCerrados++;
+        if ($esEntrada) $totalEntrada++;
+        if ($esSalida) $totalSalida++;
+
+        // Fecha efectiva del documento
+        $fechaDoc = (!empty($r['fecha_documento']) && $r['fecha_documento'] !== '0000-00-00')
+            ? $r['fecha_documento']
+            : ((!empty($r['fecha_recepcion']) && $r['fecha_recepcion'] !== '0000-00-00') ? $r['fecha_recepcion'] : null);
+
+        $anioDoc = 'Sin fecha';
+        $mesNum = 0;
+        $ymKey = '0000-00';
+        if ($fechaDoc !== null && preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $fechaDoc, $mFecha)) {
+            $anioInt = (int)$mFecha[1];
+            $mesInt = (int)$mFecha[2];
+            if ($anioInt >= 1990 && $mesInt >= 1 && $mesInt <= 12) {
+                $anioDoc = $anioInt;
+                $mesNum = $mesInt;
+                $ymKey = sprintf('%04d-%02d', $anioInt, $mesInt);
+                if ($primeraFecha === null || $fechaDoc < $primeraFecha) {
+                    $primeraFecha = $fechaDoc;
+                }
+                if ($ultimaFecha === null || $fechaDoc > $ultimaFecha) {
+                    $ultimaFecha = $fechaDoc;
+                }
+            }
+        }
+
+        $tipoNombre = !empty($r['tipo_documento']) ? trim($r['tipo_documento']) : 'Sin tipo asignado';
+        $nombreResp = trim(preg_replace('/\s+/u', ' ', ($r['resp_nombre'] ?? '') . ' ' . ($r['resp_apellido_p'] ?? '') . ' ' . ($r['resp_apellido_m'] ?? '')));
+        if ($nombreResp === '') {
+            $nombreResp = 'Sin responsable asignado';
+        }
+        $nombreSub = !empty($r['nombre_subcontrato']) ? trim($r['nombre_subcontrato']) : 'Sin subcontrato';
+
+        // 1. Clasificación por Año
+        if (!isset($mapAnio[$anioDoc])) {
+            $mapAnio[$anioDoc] = [
+                'anio' => $anioDoc,
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0,
+                'entrada' => 0,
+                'salida' => 0,
+                'por_tipo_documento' => []
             ];
         }
+        $mapAnio[$anioDoc]['cantidad_total']++;
+        if ($esPendiente) $mapAnio[$anioDoc]['pendientes']++;
+        if ($esCerrado) $mapAnio[$anioDoc]['cerrados']++;
+        if ($esEntrada) $mapAnio[$anioDoc]['entrada']++;
+        if ($esSalida) $mapAnio[$anioDoc]['salida']++;
+        $mapAnio[$anioDoc]['por_tipo_documento'][$tipoNombre] = ($mapAnio[$anioDoc]['por_tipo_documento'][$tipoNombre] ?? 0) + 1;
+
+        // 2. Clasificación por Mes (Año-Mes)
+        if (!isset($mapMes[$ymKey])) {
+            $mesNombre = $nombresMeses[$mesNum] ?? 'Sin mes';
+            $mapMes[$ymKey] = [
+                'anio' => $anioDoc,
+                'mes_numero' => $mesNum,
+                'mes_nombre' => $mesNombre,
+                'periodo' => ($mesNum >= 1 && $mesNum <= 12) ? ($mesNombre . ' ' . $anioDoc) : 'Sin fecha',
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0,
+                'entrada' => 0,
+                'salida' => 0,
+                'por_tipo_documento' => []
+            ];
+        }
+        $mapMes[$ymKey]['cantidad_total']++;
+        if ($esPendiente) $mapMes[$ymKey]['pendientes']++;
+        if ($esCerrado) $mapMes[$ymKey]['cerrados']++;
+        if ($esEntrada) $mapMes[$ymKey]['entrada']++;
+        if ($esSalida) $mapMes[$ymKey]['salida']++;
+        $mapMes[$ymKey]['por_tipo_documento'][$tipoNombre] = ($mapMes[$ymKey]['por_tipo_documento'][$tipoNombre] ?? 0) + 1;
+
+        // 3. Clasificación por Tipo de Documento
+        if (!isset($mapTipo[$tipoNombre])) {
+            $mapTipo[$tipoNombre] = [
+                'tipo_documento' => $tipoNombre,
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0,
+                'entrada' => 0,
+                'salida' => 0
+            ];
+        }
+        $mapTipo[$tipoNombre]['cantidad_total']++;
+        if ($esPendiente) $mapTipo[$tipoNombre]['pendientes']++;
+        if ($esCerrado) $mapTipo[$tipoNombre]['cerrados']++;
+        if ($esEntrada) $mapTipo[$tipoNombre]['entrada']++;
+        if ($esSalida) $mapTipo[$tipoNombre]['salida']++;
+
+        // 4. Clasificación por Responsable
+        if (!isset($mapResp[$nombreResp])) {
+            $mapResp[$nombreResp] = [
+                'responsable' => $nombreResp,
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0
+            ];
+        }
+        $mapResp[$nombreResp]['cantidad_total']++;
+        if ($esPendiente) $mapResp[$nombreResp]['pendientes']++;
+        if ($esCerrado) $mapResp[$nombreResp]['cerrados']++;
+
+        // 5. Clasificación por Subcontrato
+        if (!isset($mapSub[$nombreSub])) {
+            $mapSub[$nombreSub] = [
+                'subcontrato' => $nombreSub,
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0
+            ];
+        }
+        $mapSub[$nombreSub]['cantidad_total']++;
+        if ($esPendiente) $mapSub[$nombreSub]['pendientes']++;
+        if ($esCerrado) $mapSub[$nombreSub]['cerrados']++;
     }
 
-    // 4. Desglose histórico por responsable
-    $sqlPorResp = "SELECT u.id_usuario, u.nombre, u.apellido_p, u.apellido_m,
-                          COUNT(DISTINCT d.id_documento) AS cantidad_total,
-                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 1 THEN d.id_documento END) AS pendientes,
-                          COUNT(DISTINCT CASE WHEN d.id_estado_doc = 2 THEN d.id_documento END) AS cerrados"
-                  . $fromWhere
-                  . " GROUP BY u.id_usuario, u.nombre, u.apellido_p, u.apellido_m
-                      ORDER BY cantidad_total DESC";
-    $resResp = ejecutarSelect($cnx, $sqlPorResp, $params, $types);
-    $porResponsable = [];
-    if (!isset($resResp['error'])) {
-        foreach ($resResp as $r) {
-            $nombreResp = trim(preg_replace('/\s+/u', ' ', ($r['nombre'] ?? '') . ' ' . ($r['apellido_p'] ?? '') . ' ' . ($r['apellido_m'] ?? '')));
-            $porResponsable[] = [
-                'responsable' => $nombreResp !== '' ? $nombreResp : 'Sin responsable asignado',
-                'cantidad_total' => (int)$r['cantidad_total'],
-                'pendientes' => (int)$r['pendientes'],
-                'cerrados' => (int)$r['cerrados']
-            ];
-        }
-    }
+    // Ordenar desglose por año (de más reciente a más antiguo)
+    krsort($mapAnio);
+    $porAnio = array_values($mapAnio);
 
-    // 5. Desglose histórico por subcontrato
-    $sqlPorSub = "SELECT sc.nombre_subcontrato,
-                         COUNT(DISTINCT d.id_documento) AS cantidad_total"
-                 . $fromWhere
-                 . " GROUP BY sc.id_subcontrato, sc.nombre_subcontrato
-                     ORDER BY cantidad_total DESC";
-    $resSub = ejecutarSelect($cnx, $sqlPorSub, $params, $types);
-    $porSubcontrato = [];
-    if (!isset($resSub['error'])) {
-        foreach ($resSub as $r) {
-            $porSubcontrato[] = [
-                'subcontrato' => !empty($r['nombre_subcontrato']) ? $r['nombre_subcontrato'] : 'Sin subcontrato',
-                'cantidad_total' => (int)$r['cantidad_total']
-            ];
-        }
+    // Ordenar desglose por mes (cronológico ascendente dentro de un año, o del año más reciente por mes)
+    if ($anioFiltro !== null) {
+        ksort($mapMes);
+    } else {
+        krsort($mapMes);
     }
+    $porMes = array_values($mapMes);
+
+    // Ordenar por cantidad descendente en tipo, responsable y subcontrato
+    $porTipo = array_values($mapTipo);
+    usort($porTipo, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
+
+    $porResponsable = array_values($mapResp);
+    usort($porResponsable, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
+
+    $porSubcontrato = array_values($mapSub);
+    usort($porSubcontrato, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
 
     return [
-        'total_historico_documentos' => (int)$totales['total_historico_documentos'],
+        'total_historico_documentos' => $totalHistorico,
+        'clasificacion_principal_solicitada' => $filters['clasificar_por'] ?? 'general',
+        'anio_filtrado' => $anioFiltro,
+        'mes_filtrado' => !empty($filters['mes']) ? ($nombresMeses[(int)$filters['mes']] ?? $filters['mes']) : null,
         'desglose_por_estado' => [
-            'Pendientes' => (int)$totales['total_pendientes'],
-            'Cerrados' => (int)$totales['total_cerrados']
+            'Pendientes' => $totalPendientes,
+            'Cerrados' => $totalCerrados
         ],
         'desglose_por_flujo' => [
-            'Entrada' => (int)$totales['total_entrada'],
-            'Salida' => (int)$totales['total_salida']
+            'Entrada' => $totalEntrada,
+            'Salida' => $totalSalida
         ],
         'rango_historico_fechas' => [
-            'primera_fecha_documento' => $totales['primera_fecha_historica'],
-            'ultima_fecha_documento' => $totales['ultima_fecha_registrada']
+            'primera_fecha_documento' => $primeraFecha,
+            'ultima_fecha_documento' => $ultimaFecha
         ],
+        'desglose_por_mes' => $porMes,
         'desglose_por_anio' => $porAnio,
         'desglose_por_tipo_documento' => $porTipo,
         'desglose_por_responsable' => $porResponsable,
@@ -643,6 +774,24 @@ foreach ($usuariosContrato as $uc) {
     $nombresResponsablesContrato[] = trim(preg_replace('/\s+/u', ' ', ($uc['nombre'] ?? '') . ' ' . ($uc['apellido_p'] ?? '') . ' ' . ($uc['apellido_m'] ?? '')));
 }
 
+// Helper para limpiar y decodificar respuestas JSON de Gemini aunque incluyan bloques ```json
+function extraerJsonDeTexto($texto) {
+    $limpio = trim((string)$texto);
+    $limpio = preg_replace('/^```(?:json)?\s*/i', '', $limpio);
+    $limpio = preg_replace('/\s*```$/', '', $limpio);
+    $decoded = json_decode($limpio, true);
+    if (is_array($decoded)) {
+        return isset($decoded[0]) && is_array($decoded[0]) ? $decoded[0] : $decoded;
+    }
+    if (preg_match('/\{.*\}/s', $limpio, $m)) {
+        $decoded2 = json_decode($m[0], true);
+        if (is_array($decoded2)) {
+            return $decoded2;
+        }
+    }
+    return null;
+}
+
 // Helper para llamar a Gemini
 function llamarGemini($apiKey, $prompt, $jsonMode = false) {
     $model = defined('GEMINI_MODEL') ? GEMINI_MODEL : 'gemini-flash-latest';
@@ -667,6 +816,8 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false) {
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 45);
     curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         'Content-Type: application/json'
@@ -699,7 +850,7 @@ $anioActual = date('Y');
 $listaRespTexto = implode(', ', $nombresResponsablesContrato);
 
 // PASO 1: Clasificación de intención y extracción de variables/entidades con Gemini
-$stage1Prompt = "Analiza la consulta en lenguaje natural de un usuario del Sistema de Gestión Documental (SGD) de Axioma y extrae los criterios y variables de búsqueda estructurados.
+$stage1Prompt = "Analiza la consulta en lenguaje natural de un usuario del Sistema de Gestión Documental (SGD) de Axioma y extrae los criterios y variables de búsqueda o clasificación estructurados.
 Fecha actual del sistema: {$fechaActual} (Año actual: {$anioActual}).
 El usuario autenticado pertenece exclusivamente al contrato: \"{$userContractName}\" (ID Contrato: {$userContractId}).
 Dentro de este contrato existen los siguientes usuarios/responsables registrados: [{$listaRespTexto}].
@@ -717,13 +868,13 @@ La base de datos contiene estas tablas principales (restringidas al contrato del
 IMPORTANTE: Si el usuario menciona cargos o nombres como 'Jefe Asesoria', 'Jefe de Asesoría', 'Encargada de Gestión', 'Jefe Área Construcción', 'Asesor Legal', etc. (incluso con errores ortográficos o sin tildes), corrígelo e identifícalo como `responsable` (o `remitente`/`destinatario` según el contexto de la frase) DENTRO de su propio contrato, y NUNCA como un contrato distinto (`contrato_nombre` debe ser null).
 
 Debes retornar EXCLUSIVAMENTE un objeto JSON estructurado con las siguientes claves:
-- 'intent': Debe ser uno de: 'contract', 'user', 'document', 'general' (si se consulta por documentos según su responsable, remitente o destinatario, el intent DEBE ser 'document').
-- 'keywords': Un array de palabras clave específicas (strings) para búsquedas generales. Si los términos ya fueron ubicados en 'filters' (como responsable, remitente, destinatario, materia, etc.) o si es una consulta general de 'últimos documentos', DEJA EL ARRAY VACÍO []. NO incluyas palabras genéricas.
+- 'intent': Debe ser uno de: 'contract', 'user', 'document', 'general' (si se consulta o cuenta documentos por mes, año, tipo, responsable, remitente o destinatario, el intent DEBE ser 'document').
+- 'keywords': Un array de palabras clave específicas (strings) para búsquedas generales. Si los términos ya fueron ubicados en 'filters' (como año, mes, responsable, remitente, destinatario, tipo_documento, materia, etc.) o si es una consulta de conteo/clasificación o de 'últimos documentos', DEJA EL ARRAY VACÍO [].
 - 'filters': Un objeto con las variables extraídas de la consulta (corrigiendo errores de tipeo si aplica):
   - 'responsable': string o null (nombre o cargo del responsable del documento dentro del contrato, ej. 'Jefe Asesoria', sin artículos como 'el' o 'la')
   - 'remitente': string o null (nombre, apellido o cargo de la entidad remitente si se buscan documentos enviados/remitidos por alguien)
   - 'destinatario': string o null (nombre, apellido o cargo de la entidad destinataria si se buscan documentos dirigidos/enviados a alguien)
-  - 'tipo_documento': string o null (si se menciona un tipo de documento como Oficio, Carta, Informe, etc.)
+  - 'tipo_documento': string o null (si filtra por un tipo de documento específico como Oficio, Carta, Informe; si pide clasificar 'por tipo de documento', pon null aquí y usa 'clasificar_por': 'tipo_documento')
   - 'materia': string o null (si se busca por una materia o asunto específico)
   - 'subcontrato': string o null (si se menciona un subcontrato específico)
   - 'usuario_nombre': string o null (si la intención es 'user' y se busca información de un usuario)
@@ -733,10 +884,13 @@ Debes retornar EXCLUSIVAMENTE un objeto JSON estructurado con las siguientes cla
   - 'estado_doc': int o null (1 si pide documentos 'pendientes', 2 si pide documentos 'cerrados', null en otro caso)
   - 'flujo_doc': int o null (1 si pide documentos de 'entrada', 2 si pide documentos de 'salida', null en otro caso)
   - 'solo_mis_documentos': boolean (true SOLO si el usuario pide explícitamente 'mis documentos' en primera persona, false cuando pregunta por otro responsable del contrato como 'Jefe Asesoria')
-  - 'es_consulta_cantidad': boolean (true si el usuario pregunta por cifras, cantidades, totales, conteos, estadísticas o 'cuántos/cuántas' documentos/registros existen; false si pide ver, listar o consultar el detalle de documentos)
+  - 'es_consulta_cantidad': boolean (true si el usuario pregunta por cifras, cantidades, totales, conteos, clasificaciones estadísticas o 'cuántos/cuántas' documentos/registros existen; false si pide ver, listar o consultar el detalle de documentos)
+  - 'clasificar_por': string o null (dimensión principal por la que el usuario pide clasificar o agrupar el conteo de documentos: 'mes', 'anio', 'tipo_documento', 'estado', 'flujo', 'responsable', 'subcontrato', o null si solo pide un total general)
+  - 'anio': int o null (año de 4 dígitos si el usuario filtra por un año específico, ej. 2026 o 2025; null si no especifica un año concreto)
+  - 'mes': int o null (número de mes del 1 al 12 SOLO si el usuario filtra por un único mes específico, ej. enero = 1; si el usuario pide contar o clasificar 'por mes', pon null)
   - 'orden_recientes': boolean (true si pide el último documento, los últimos documentos, más recientes o nuevos)
-  - 'fecha_desde': string o null (fecha YYYY-MM-DD SOLO si el usuario especifica un año, mes o fecha concreta, ej. '2026-01-01'. Si solo pide 'el último documento', 'los últimos documentos' o una cifra/cantidad histórica sin mencionar fecha/año, pon null).
-  - 'fecha_hasta': string o null (fecha YYYY-MM-DD SOLO si el usuario especifica un límite de fecha concreto; de lo contrario null).
+  - 'fecha_desde': string o null (fecha YYYY-MM-DD SOLO si el usuario especifica un rango de fechas exacto; si usa 'anio' o 'mes', pon null)
+  - 'fecha_hasta': string o null (fecha YYYY-MM-DD SOLO si el usuario especifica un límite de fecha exacto; si usa 'anio' o 'mes', pon null)
 
 Consulta del usuario: \"" . $query . "\"";
 
@@ -748,7 +902,7 @@ if (isset($stage1Res['error'])) {
     exit;
 }
 
-$searchParams = json_decode($stage1Res['text'], true);
+$searchParams = extraerJsonDeTexto($stage1Res['text']);
 if (!$searchParams) {
     $searchParams = [
         'intent' => 'general',
@@ -761,39 +915,96 @@ $intent = $searchParams['intent'] ?? 'general';
 $keywords = $searchParams['keywords'] ?? [];
 $filters = $searchParams['filters'] ?? [];
 
-// Detectar si la consulta pregunta por cifras, cantidades, totales o conteos históricos
+$queryLower = mb_strtolower($query, 'UTF-8');
+
+// Detectar si la consulta pregunta por cifras, cantidades, totales, conteos o clasificaciones estadísticas
 $esConsultaCantidad = !empty($filters['es_consulta_cantidad']) ||
-    (bool)preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|total(?:es)?|conteo|contar|estad[ií]sticas?|n[uú]mero\s+total|n[uú]mero\s+de\s+documentos|registro\s+hist[oó]rico)\b/iu', $query);
+    (bool)preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|total(?:es)?|conteo|contar|estad[ií]sticas?|clasific\w*|desglos\w*|agrup\w*|n[uú]mero\s+total|n[uú]mero\s+de\s+documentos|registro\s+hist[oó]rico|por\s+mes(?:es)?|por\s+a[ñn]os?|por\s+tipos?)\b/iu', $query);
 $filters['es_consulta_cantidad'] = $esConsultaCantidad;
+
+// Detectar dimensión de clasificación solicitada (mes, año, tipo_documento, estado, flujo, responsable, subcontrato)
+if (empty($filters['clasificar_por'])) {
+    if (preg_match('/\b(por\s+mes(?:es)?|mensual(?:es|mente)?|cada\s+mes|mes\s+a\s+mes)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'mes';
+    } elseif (preg_match('/\b(por\s+a[ñn]os?|anual(?:es|mente)?|cada\s+a[ñn]o|a[ñn]o\s+a\s+a[ñn]o)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'anio';
+    } elseif (preg_match('/\b(por\s+tipos?(?:\s+de\s+documentos?)?|seg[uú]n\s+(?:su\s+)?tipo)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'tipo_documento';
+    } elseif (preg_match('/\b(por\s+estados?|seg[uú]n\s+(?:su\s+)?estado)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'estado';
+    } elseif (preg_match('/\b(por\s+flujos?|seg[uú]n\s+(?:su\s+)?flujo)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'flujo';
+    } elseif (preg_match('/\b(por\s+responsables?|seg[uú]n\s+(?:su\s+)?responsable)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'responsable';
+    } elseif (preg_match('/\b(por\s+subcontratos?)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'subcontrato';
+    }
+}
+
+// Si pide clasificar "por mes", aseguramos que 'mes' no filtre un único mes a menos que haya nombrado uno explícitamente
+$mapaMesesNombre = [
+    'enero' => 1, 'febrero' => 2, 'marzo' => 3, 'abril' => 4,
+    'mayo' => 5, 'junio' => 6, 'julio' => 7, 'agosto' => 8,
+    'septiembre' => 9, 'setiembre' => 9, 'octubre' => 10, 'noviembre' => 11, 'diciembre' => 12
+];
+$mesExplicitoDetectado = null;
+foreach ($mapaMesesNombre as $nombreM => $numM) {
+    if (preg_match('/\b' . $nombreM . '\b/iu', $queryLower)) {
+        $mesExplicitoDetectado = $numM;
+        break;
+    }
+}
+if ($mesExplicitoDetectado !== null && empty($filters['mes'])) {
+    $filters['mes'] = $mesExplicitoDetectado;
+} elseif (($filters['clasificar_por'] ?? null) === 'mes' && $mesExplicitoDetectado === null) {
+    $filters['mes'] = null;
+}
+
+// Detectar año explícito (ej. "en el año 2026", "del 2026", "2025")
+if (preg_match('/\b(20\d{2})\b/u', $queryLower, $mAnio)) {
+    if (empty($filters['anio'])) {
+        $filters['anio'] = (int)$mAnio[1];
+    }
+}
+
+// Si ya tenemos filtro por año o mes entero, limpiamos fecha_desde / fecha_hasta redundantes
+if (!empty($filters['anio']) || !empty($filters['mes'])) {
+    $filters['fecha_desde'] = null;
+    $filters['fecha_hasta'] = null;
+}
 
 // Si se detectaron filtros de variables de documentos (responsable, remitente, destinatario) o consulta de cantidades de documentos, asegurar intent document
 if (!empty($customVars['id_responsable']) || !empty($customVars['id_remitente']) || !empty($customVars['id_destinatario']) ||
     !empty($filters['responsable']) || !empty($filters['remitente']) || !empty($filters['destinatario']) ||
+    !empty($filters['clasificar_por']) || !empty($filters['anio']) || !empty($filters['mes']) ||
     $esConsultaCantidad) {
     $intent = 'document';
 }
 
-// Filtrar palabras clave genéricas (Stopwords)
+// Filtrar palabras clave genéricas (Stopwords) y años para no contaminar búsquedas por texto
 $stopwords = [
     'usuario', 'usuarios', 'contrato', 'contratos', 'subcontrato', 'subcontratos',
     'documento', 'documentos', 'listar', 'lista', 'mostrar', 'muestra', 'muestrame', 'muéstrame',
     'todos', 'todas', 'ver', 'dame', 'entregar', 'especifico', 'específicos', 'especifica', 'especificas',
-    'buscar', 'busca', 'consultar', 'consulta', 'con', 'del', 'los', 'las', 'unos', 'unas', 'para',
+    'buscar', 'busca', 'consultar', 'consulta', 'con', 'del', 'los', 'las', 'unos', 'unas', 'para', 'por',
     'sobre', 'materia', 'ultimo', 'ultimos', 'último', 'últimos', 'ultima', 'ultimas', 'última', 'últimas',
     'reciente', 'recientes', 'nuevo', 'nuevos', 'nueva', 'nuevas', 'actual', 'actuales', 'registrado',
     'registrados', 'cargado', 'cargados', 'sistema', 'sgd', 'axioma', 'pendiente', 'pendientes',
-    'cerrado', 'cerrados', 'entrada', 'salida', 'fecha', 'fechas', 'mes', 'año', 'anio', 'cuales', 'cuáles', 'son', 'hay',
-    'responsable', 'responsables', 'remitente', 'remitentes', 'destinatario', 'destinatarios', 'enviado', 'enviados', 'dirigido', 'dirigidos',
-    'tiene', 'tienen', 'como', 'cuanto', 'cuantos', 'cuanta', 'cuantas', 'cuánto', 'cuántos', 'cuánta', 'cuántas',
-    'cantidad', 'cantidades', 'cifra', 'cifras', 'total', 'totales', 'historico', 'historicos', 'histórico', 'históricos',
-    'historica', 'historicas', 'histórica', 'históricas', 'registro', 'registros', 'estadistica', 'estadisticas',
-    'estadística', 'estadísticas', 'conteo', 'contar', 'numero', 'numeros', 'número', 'números', 'existen'
+    'cerrado', 'cerrados', 'entrada', 'salida', 'fecha', 'fechas', 'mes', 'meses', 'mensual', 'año', 'años', 'anio', 'anios', 'anual',
+    'cuales', 'cuáles', 'son', 'hay', 'responsable', 'responsables', 'remitente', 'remitentes', 'destinatario', 'destinatarios',
+    'enviado', 'enviados', 'dirigido', 'dirigidos', 'tiene', 'tienen', 'como', 'cuanto', 'cuantos', 'cuanta', 'cuantas',
+    'cuánto', 'cuántos', 'cuánta', 'cuántas', 'cantidad', 'cantidades', 'cifra', 'cifras', 'total', 'totales',
+    'historico', 'historicos', 'histórico', 'históricos', 'historica', 'historicas', 'histórica', 'históricas',
+    'registro', 'registros', 'estadistica', 'estadisticas', 'estadística', 'estadísticas', 'conteo', 'contar',
+    'numero', 'numeros', 'número', 'números', 'existen', 'existe', 'clasificar', 'clasificados', 'clasificacion', 'clasificación',
+    'desglose', 'desglosado', 'agrupar', 'agrupado', 'tipo', 'tipos', 'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+    'julio', 'agosto', 'septiembre', 'setiembre', 'octubre', 'noviembre', 'diciembre'
 ];
 $filteredKeywords = [];
 if (is_array($keywords)) {
     foreach ($keywords as $kw) {
-        $kwClean = preg_replace('/[^\p{L}\p{N}\s]/u', '', mb_strtolower(trim((string)$kw)));
-        if (!in_array($kwClean, $stopwords) && mb_strlen($kwClean) > 2) {
+        $kwClean = preg_replace('/[^\p{L}\p{N}\s]/u', '', mb_strtolower(trim((string)$kw), 'UTF-8'));
+        if (!in_array($kwClean, $stopwords, true) && !preg_match('/^20\d{2}$/', $kwClean) && mb_strlen($kwClean) > 2) {
             $filteredKeywords[] = trim((string)$kw);
         }
     }
@@ -802,8 +1013,7 @@ $keywords = $filteredKeywords;
 
 // Si el usuario consulta por "último documento" / "últimos documentos" / "recientes" o por cifras/cantidades históricas
 // sin haber escrito un año o mes explícito, limpiamos fecha_desde / fecha_hasta para abarcar todo el registro histórico.
-$queryLower = mb_strtolower($query);
-$mentionsExplicitYearOrMonth = preg_match('/\b(20\d{2}|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/u', $queryLower);
+$mentionsExplicitYearOrMonth = ($mesExplicitoDetectado !== null) || !empty($filters['anio']);
 if (!$mentionsExplicitYearOrMonth && (preg_match('/(últim|ultim|recient|nuev)/u', $queryLower) || $esConsultaCantidad)) {
     $filters['fecha_desde'] = null;
     $filters['fecha_hasta'] = null;
@@ -878,7 +1088,7 @@ if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad) {
 
 if ($intent === 'document' || $intent === 'general') {
     if ($esConsultaCantidad) {
-        // Cuando pregunta por cifras y cantidades: contar el registro histórico completo y NO retornar el detalle de documentos
+        // Cuando pregunta por cifras, cantidades o clasificaciones: contar el registro histórico y NO retornar el detalle de documentos
         $resConteo = contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
         if (!isset($resConteo['error'])) {
             $resConteo['total_usuarios_activos_contrato'] = count($usuariosContrato);
@@ -902,8 +1112,12 @@ mysqli_close($cnx);
 
 // PASO 3: Construcción de la respuesta final con Gemini (RAG)
 $instruccionesEspecificas = $esConsultaCantidad
-    ? "3. CONSULTA DE CIFRAS Y CANTIDADES (REGISTRO HISTÓRICO): El usuario está consultando por cifras, cantidades o totales. Responde utilizando EXCLUSIVAMENTE los conteos del registro histórico contenidos en `estadisticas_historicas_documentos` (`total_historico_documentos`, `desglose_por_estado`, `desglose_por_flujo`, `desglose_por_anio`, `desglose_por_tipo_documento`, `desglose_por_responsable`, `desglose_por_subcontrato`, `rango_historico_fechas`).
-4. PROHIBIDO RETORNAR DETALLE DE DOCUMENTOS: En consultas de cifras y cantidades, entrega únicamente los números, totales y desgloses estadísticos solicitados. NO listes ni devuelvas el detalle individual de documentos (no incluyas números de documento individuales, materias ni enlaces de descarga)."
+    ? "3. CONSULTA DE CIFRAS, CANTIDADES Y CLASIFICACIÓN DE DOCUMENTOS: El usuario está consultando por cifras, cantidades, totales o clasificación de documentos (por mes, año, tipo de documento, estado, flujo, responsable o subcontrato). Responde utilizando EXCLUSIVAMENTE los conteos contenidos en `estadisticas_historicas_documentos`:
+   - Si pregunta por clasificación **por mes** (ej. 'cuántos documentos existen por mes en el año 2026'): presenta de forma clara y ordenada el desglose mensual de `desglose_por_mes` (indicando cada mes, su cantidad total, y si aporta valor, cuántos están pendientes/cerrados o por tipo), junto con el `total_historico_documentos` del período consultado.
+   - Si pregunta por clasificación **por año**: presenta los datos de `desglose_por_anio`.
+   - Si pregunta por clasificación **por tipo de documento**: presenta los datos de `desglose_por_tipo_documento` (Oficio, Carta, Informe, etc.).
+   - Si pregunta por **estado**, **flujo**, **responsable** o **subcontrato**: utiliza `desglose_por_estado`, `desglose_por_flujo`, `desglose_por_responsable` o `desglose_por_subcontrato` según corresponda.
+4. PROHIBIDO RETORNAR DETALLE DE DOCUMENTOS: En consultas de cifras, cantidades y clasificaciones, entrega únicamente los números, totales y desgloses estadísticos solicitados. NO listes ni devuelvas el detalle individual de documentos (no incluyas números de documento individuales, materias ni enlaces de descarga)."
     : "3. SI PIDE 'EL ÚLTIMO DOCUMENTO' (en singular): Muestra en primer lugar y de forma destacada el documento más reciente que encabeza la lista `documentos` (el primer elemento `documentos[0]`, que ya viene ordenado del más reciente de 2026 hacia atrás).
 4. VARIABLES DE DOCUMENTOS: Cuando muestres uno o más documentos, incluye sus datos clave de forma ordenada:
    - **N° Documento / Providencia** (`num_documento` / `num_providencia`)

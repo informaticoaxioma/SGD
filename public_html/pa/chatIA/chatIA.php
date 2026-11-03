@@ -1,6 +1,9 @@
 <?php
+require_once '../../data/config_ai.php';
 require_once '../../data/Usuario.php';
 require_once '../../data/Contrato.php';
+
+$serverHasApiKey = (defined('GEMINI_API_KEY') && trim(GEMINI_API_KEY) !== '');
 
 session_start();
 if (!isset($_SESSION['usuario'])) {
@@ -46,9 +49,11 @@ try {
                                     </span>
                                 </div>
                                 <div class="col-xs-12 col-sm-4 col-md-4 text-right">
+                                    <?php if (!$serverHasApiKey): ?>
                                     <button type="button" class="btn btn-primary btn-sm" data-toggle="modal" data-target="#modalConfigIA">
                                         <i class="fa fa-gear"></i>&nbsp;Configurar API Key
                                     </button>
+                                    <?php endif; ?>
                                     <button type="button" class="btn btn-default btn-sm" onclick="limpiarChat()">
                                         <i class="fa fa-refresh"></i>&nbsp;Limpiar
                                     </button>
@@ -268,11 +273,13 @@ try {
 </style>
 
 <script>
+var serverHasApiKey = <?php echo $serverHasApiKey ? 'true' : 'false'; ?>;
+
 $(document).ready(function() {
     var storedKey = localStorage.getItem('gemini_api_key_sgd');
     if (storedKey) {
         $('#gemini_api_key_input').val(storedKey);
-    } else {
+    } else if (!serverHasApiKey) {
         $('#apiKeyWarning').removeClass('noDisplay');
     }
 });
