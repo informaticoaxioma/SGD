@@ -138,12 +138,32 @@ function formatearFilaDocumento($row) {
     $destinatario = trim(preg_replace('/\s+/u', ' ', ($row['dest_nombre'] ?? '') . ' ' . ($row['dest_apellido'] ?? '')));
     $nombreContrato = !empty($row['contrato_sub']) ? $row['contrato_sub'] : ($row['contrato_usr'] ?? '');
 
+    $fechaCierre = !empty($row['fecha_cierre']) && $row['fecha_cierre'] !== '0000-00-00' ? $row['fecha_cierre'] : null;
+    $diasEnCerrar = null;
+    if ($fechaCierre !== null) {
+        $fIni = (!empty($row['fecha_documento']) && $row['fecha_documento'] !== '0000-00-00')
+            ? $row['fecha_documento']
+            : ((!empty($row['fecha_recepcion']) && $row['fecha_recepcion'] !== '0000-00-00') ? $row['fecha_recepcion'] : null);
+        if ($fIni !== null) {
+            $tsIni = strtotime(substr(trim($fIni), 0, 10));
+            $tsFin = strtotime(substr(trim($fechaCierre), 0, 10));
+            if ($tsIni !== false && $tsFin !== false) {
+                $diff = (int)round(($tsFin - $tsIni) / 86400);
+                if ($diff >= 0 && $diff <= 3650) {
+                    $diasEnCerrar = $diff;
+                }
+            }
+        }
+    }
+
     return [
         'id_documento' => (int)$row['id_documento'],
         'nombre_documento' => $row['nombre_documento'],
         'fecha_documento' => $row['fecha_documento'],
         'fecha_recepcion' => $row['fecha_recepcion'],
         'fecha_plazo' => $row['fecha_plazo'],
+        'fecha_cierre' => $fechaCierre,
+        'dias_en_cerrar' => $diasEnCerrar,
         'estado_documento' => $row['estado_documento'],
         'flujo_documento' => $row['flujo_documento'],
         'num_documento' => $row['num_documento'],
@@ -345,8 +365,10 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
         $types .= "sss";
     }
 
-    // Expresión de fecha efectiva del documento (usa fecha_documento y si es 0000-00-00 o nula usa fecha_recepcion)
-    $fechaEfectivaSql = "COALESCE(NULLIF(d.fecha_documento, '0000-00-00'), NULLIF(d.fecha_recepcion, '0000-00-00'))";
+    // Expresión de fecha efectiva del documento (o fecha_cierre cuando se consulta por documentos que pasaron a cerrado en un mes/año)
+    $fechaDocumentoBaseSql = "COALESCE(NULLIF(d.fecha_documento, '0000-00-00'), NULLIF(d.fecha_recepcion, '0000-00-00'))";
+    $fechaCierreBaseSql = "COALESCE(NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'), NULLIF(d.fecha_documento, '0000-00-00'), NULLIF(d.fecha_recepcion, '0000-00-00'))";
+    $fechaEfectivaSql = !empty($filters['filtrar_por_fecha_cierre']) ? $fechaCierreBaseSql : $fechaDocumentoBaseSql;
 
     if (!empty($filters['anio']) && (int)$filters['anio'] >= 1990 && (int)$filters['anio'] <= 2100) {
         $where .= " AND YEAR($fechaEfectivaSql) = ?";
@@ -375,10 +397,13 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
     // 7. Búsqueda por palabras clave generales sobre todas las variables del documento
     $hasSpecificVarFilter = !empty($customVars['id_responsable']) || !empty($customVars['id_remitente']) || !empty($customVars['id_destinatario']) ||
                             !empty($responsableFiltro) || !empty($filters['remitente']) || !empty($filters['destinatario']) ||
+                            !empty($filters['estado_doc']) || !empty($filters['flujo_doc']) ||
                             !empty($filters['tipo_documento']) || !empty($filters['subcontrato']) || !empty($filters['materia']) ||
                             !empty($filters['doc_nombre']) || !empty($filters['doc_numero']) ||
                             !empty($filters['anio']) || !empty($filters['mes']) ||
                             !empty($filters['fecha_desde']) || !empty($filters['fecha_hasta']) ||
+                            !empty($filters['filtrar_por_fecha_cierre']) ||
+                            !empty($filters['orden_antiguos']) || !empty($filters['orden_recientes']) ||
                             !empty($filters['es_consulta_cantidad']);
 
     if (!$hasSpecificVarFilter && !empty($keywords)) {
@@ -429,6 +454,13 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
     $sql = "SELECT d.id_documento,
                    d.fecha_documento,
                    d.fecha_recepcion,
+                   CASE WHEN d.id_estado_doc = 2 THEN
+                       COALESCE(
+                           NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'),
+                           NULLIF(d.fecha_documento, '0000-00-00'),
+                           NULLIF(d.fecha_recepcion, '0000-00-00')
+                       )
+                   ELSE NULL END AS fecha_cierre,
                    d.id_estado_doc,
                    d.id_flujo,
                    td.tipo_documento,
@@ -502,10 +534,12 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
         if ($esEntrada) $totalEntrada++;
         if ($esSalida) $totalSalida++;
 
-        // Fecha efectiva del documento
-        $fechaDoc = (!empty($r['fecha_documento']) && $r['fecha_documento'] !== '0000-00-00')
-            ? $r['fecha_documento']
-            : ((!empty($r['fecha_recepcion']) && $r['fecha_recepcion'] !== '0000-00-00') ? $r['fecha_recepcion'] : null);
+        // Fecha efectiva del documento (o fecha_cierre cuando se filtra por cambio de estado a cerrado)
+        $fechaDoc = (!empty($filters['filtrar_por_fecha_cierre']) && !empty($r['fecha_cierre']) && $r['fecha_cierre'] !== '0000-00-00')
+            ? $r['fecha_cierre']
+            : ((!empty($r['fecha_documento']) && $r['fecha_documento'] !== '0000-00-00')
+                ? $r['fecha_documento']
+                : ((!empty($r['fecha_recepcion']) && $r['fecha_recepcion'] !== '0000-00-00') ? $r['fecha_recepcion'] : null));
 
         $anioDoc = 'Sin fecha';
         $mesNum = 0;
@@ -667,6 +701,474 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
 }
 
 /**
+ * Verifica si una cadena representa una fecha válida YYYY-MM-DD entre 1990 y 2100.
+ */
+function esFechaValidaSgd($fecha) {
+    if (empty($fecha) || !is_string($fecha)) {
+        return false;
+    }
+    $fecha = trim($fecha);
+    if ($fecha === '0000-00-00' || !preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $fecha, $m)) {
+        return false;
+    }
+    $y = (int)$m[1];
+    $mo = (int)$m[2];
+    $d = (int)$m[3];
+    return ($y >= 1990 && $y <= 2100 && $mo >= 1 && $mo <= 12 && $d >= 1 && $d <= 31);
+}
+
+/**
+ * Calcula la diferencia en días calendario entre dos fechas YYYY-MM-DD ($fechaFin - $fechaInicio).
+ */
+function diasEntreFechasSgd($fechaInicio, $fechaFin) {
+    $ts1 = strtotime(substr(trim($fechaInicio), 0, 10));
+    $ts2 = strtotime(substr(trim($fechaFin), 0, 10));
+    if ($ts1 === false || $ts2 === false) {
+        return null;
+    }
+    return (int)round(($ts2 - $ts1) / 86400);
+}
+
+/**
+ * Inicializa un acumulador de métricas de tiempo entre fechas para un grupo (general, responsable, tipo, mes, año, flujo, subcontrato).
+ */
+function crearAcumuladorTiempos($etiqueta) {
+    return [
+        'grupo' => $etiqueta,
+        'total_documentos' => 0,
+        'cerrados' => 0,
+        'pendientes' => 0,
+        // De pendiente a cerrado (todos los cerrados con fecha válida)
+        'suma_dias_cierre' => 0,
+        'conteo_dias_cierre' => 0,
+        'min_dias_cierre' => null,
+        'max_dias_cierre' => null,
+        // De pendiente a cerrado (solo aquellos con fecha explícita en bitácora/seguimiento o días > 0)
+        'suma_dias_cierre_efectivo' => 0,
+        'conteo_dias_cierre_efectivo' => 0,
+        // Desde fecha_documento hasta fecha_cierre
+        'suma_dias_doc_a_cierre' => 0,
+        'conteo_dias_doc_a_cierre' => 0,
+        // Desde fecha_recepcion hasta fecha_cierre
+        'suma_dias_rec_a_cierre' => 0,
+        'conteo_dias_rec_a_cierre' => 0,
+        // Desde fecha_documento hasta fecha_recepcion
+        'suma_dias_doc_a_rec' => 0,
+        'conteo_dias_doc_a_rec' => 0,
+        // Plazo otorgado (inicio a fecha_plazo)
+        'suma_dias_plazo_otorgado' => 0,
+        'conteo_dias_plazo_otorgado' => 0,
+        'cerrados_en_plazo' => 0,
+        'cerrados_fuera_de_plazo' => 0,
+        // Documentos actualmente pendientes (tiempo de espera hasta hoy)
+        'suma_dias_espera_pendientes' => 0,
+        'conteo_dias_espera_pendientes' => 0,
+        'max_dias_espera_pendiente' => null,
+        'pendientes_en_plazo' => 0,
+        'pendientes_vencidos' => 0
+    ];
+}
+
+/**
+ * Registra las métricas de un documento dentro de un acumulador de grupo.
+ */
+function registrarDocEnAcumuladorTiempos(&$acc, $esPendiente, $esCerrado, $diasCierre, $tieneCierreEfectivo, $diasDocACierre, $diasRecACierre, $diasDocARec, $diasPlazoOtorgado, $cumplePlazoCerrado, $diasEsperaPendiente, $pendienteVencido) {
+    $acc['total_documentos']++;
+    if ($esCerrado) {
+        $acc['cerrados']++;
+    }
+    if ($esPendiente) {
+        $acc['pendientes']++;
+    }
+    if ($diasCierre !== null) {
+        $acc['suma_dias_cierre'] += $diasCierre;
+        $acc['conteo_dias_cierre']++;
+        if ($acc['min_dias_cierre'] === null || $diasCierre < $acc['min_dias_cierre']) {
+            $acc['min_dias_cierre'] = $diasCierre;
+        }
+        if ($acc['max_dias_cierre'] === null || $diasCierre > $acc['max_dias_cierre']) {
+            $acc['max_dias_cierre'] = $diasCierre;
+        }
+        if ($tieneCierreEfectivo) {
+            $acc['suma_dias_cierre_efectivo'] += $diasCierre;
+            $acc['conteo_dias_cierre_efectivo']++;
+        }
+    }
+    if ($diasDocACierre !== null) {
+        $acc['suma_dias_doc_a_cierre'] += $diasDocACierre;
+        $acc['conteo_dias_doc_a_cierre']++;
+    }
+    if ($diasRecACierre !== null) {
+        $acc['suma_dias_rec_a_cierre'] += $diasRecACierre;
+        $acc['conteo_dias_rec_a_cierre']++;
+    }
+    if ($diasDocARec !== null) {
+        $acc['suma_dias_doc_a_rec'] += $diasDocARec;
+        $acc['conteo_dias_doc_a_rec']++;
+    }
+    if ($diasPlazoOtorgado !== null) {
+        $acc['suma_dias_plazo_otorgado'] += $diasPlazoOtorgado;
+        $acc['conteo_dias_plazo_otorgado']++;
+    }
+    if ($cumplePlazoCerrado === true) {
+        $acc['cerrados_en_plazo']++;
+    } elseif ($cumplePlazoCerrado === false) {
+        $acc['cerrados_fuera_de_plazo']++;
+    }
+    if ($diasEsperaPendiente !== null) {
+        $acc['suma_dias_espera_pendientes'] += $diasEsperaPendiente;
+        $acc['conteo_dias_espera_pendientes']++;
+        if ($acc['max_dias_espera_pendiente'] === null || $diasEsperaPendiente > $acc['max_dias_espera_pendiente']) {
+            $acc['max_dias_espera_pendiente'] = $diasEsperaPendiente;
+        }
+    }
+    if ($pendienteVencido === true) {
+        $acc['pendientes_vencidos']++;
+    } elseif ($pendienteVencido === false) {
+        $acc['pendientes_en_plazo']++;
+    }
+}
+
+/**
+ * Resume un acumulador calculando los promedios en días (redondeados a 1 decimal).
+ */
+function finalizarAcumuladorTiempos($acc) {
+    $promCierreGeneral = $acc['conteo_dias_cierre'] > 0
+        ? round($acc['suma_dias_cierre'] / $acc['conteo_dias_cierre'], 1)
+        : null;
+    $promCierreEfectivo = $acc['conteo_dias_cierre_efectivo'] > 0
+        ? round($acc['suma_dias_cierre_efectivo'] / $acc['conteo_dias_cierre_efectivo'], 1)
+        : $promCierreGeneral;
+    $promDocACierre = $acc['conteo_dias_doc_a_cierre'] > 0
+        ? round($acc['suma_dias_doc_a_cierre'] / $acc['conteo_dias_doc_a_cierre'], 1)
+        : null;
+    $promRecACierre = $acc['conteo_dias_rec_a_cierre'] > 0
+        ? round($acc['suma_dias_rec_a_cierre'] / $acc['conteo_dias_rec_a_cierre'], 1)
+        : null;
+    $promDocARec = $acc['conteo_dias_doc_a_rec'] > 0
+        ? round($acc['suma_dias_doc_a_rec'] / $acc['conteo_dias_doc_a_rec'], 1)
+        : null;
+    $promPlazo = $acc['conteo_dias_plazo_otorgado'] > 0
+        ? round($acc['suma_dias_plazo_otorgado'] / $acc['conteo_dias_plazo_otorgado'], 1)
+        : null;
+    $promEsperaPend = $acc['conteo_dias_espera_pendientes'] > 0
+        ? round($acc['suma_dias_espera_pendientes'] / $acc['conteo_dias_espera_pendientes'], 1)
+        : null;
+
+    $totalConPlazoCerrados = $acc['cerrados_en_plazo'] + $acc['cerrados_fuera_de_plazo'];
+    $porcentajeEnPlazo = $totalConPlazoCerrados > 0
+        ? round(($acc['cerrados_en_plazo'] / $totalConPlazoCerrados) * 100, 1)
+        : null;
+
+    return [
+        'grupo' => $acc['grupo'],
+        'total_documentos' => $acc['total_documentos'],
+        'cerrados' => $acc['cerrados'],
+        'pendientes' => $acc['pendientes'],
+        'promedio_dias_pendiente_a_cerrado' => $promCierreEfectivo !== null ? $promCierreEfectivo : $promCierreGeneral,
+        'promedio_dias_cierre_todos_los_cerrados' => $promCierreGeneral,
+        'promedio_dias_cierre_con_seguimiento_o_bitacora' => $promCierreEfectivo,
+        'documentos_cerrados_con_fechas_medibles' => $acc['conteo_dias_cierre'],
+        'documentos_cerrados_con_bitacora_o_seguimiento' => $acc['conteo_dias_cierre_efectivo'],
+        'minimo_dias_cierre' => $acc['min_dias_cierre'],
+        'maximo_dias_cierre' => $acc['max_dias_cierre'],
+        'promedio_dias_fecha_documento_a_cierre' => $promDocACierre,
+        'promedio_dias_fecha_recepcion_a_cierre' => $promRecACierre,
+        'promedio_dias_emision_a_recepcion' => $promDocARec,
+        'promedio_dias_plazo_otorgado' => $promPlazo,
+        'cerrados_en_plazo' => $acc['cerrados_en_plazo'],
+        'cerrados_fuera_de_plazo' => $acc['cerrados_fuera_de_plazo'],
+        'porcentaje_cumplimiento_plazo' => $porcentajeEnPlazo,
+        'promedio_dias_espera_pendientes_actuales' => $promEsperaPend,
+        'maximo_dias_espera_pendiente_actual' => $acc['max_dias_espera_pendiente'],
+        'pendientes_en_plazo' => $acc['pendientes_en_plazo'],
+        'pendientes_vencidos' => $acc['pendientes_vencidos']
+    ];
+}
+
+/**
+ * Mide los tiempos en días entre las fechas de los documentos del contrato:
+ * - Tiempo en pasar de Pendiente a Cerrado (usando fecha de cierre de bitácora, seguimiento o recepción/documento)
+ * - Tiempo desde Fecha de Documento hasta Fecha de Recepción
+ * - Tiempo desde Fecha de Documento / Recepción hasta Fecha de Plazo y cumplimiento de plazos
+ * - Tiempo de espera acumulado en documentos actualmente Pendientes
+ * Clasifica todas las métricas de forma general y por responsable/usuario, tipo de documento, año, mes, flujo, subcontrato y remitente.
+ */
+function calcularMetricasTiemposDocumentos($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = []) {
+    // Para medir tiempos entre pendiente y cerrado no restringimos estado_doc en el WHERE base
+    $filtersParaTiempos = $filters;
+    unset($filtersParaTiempos['estado_doc']);
+
+    $base = construirBaseWhereDocumentos($userContractId, $userId, $filtersParaTiempos, $keywords, $customVars, $usuariosContrato);
+    $fromWhere = $base['from_joins'] . $base['where'];
+
+    $sql = "SELECT d.id_documento,
+                   d.fecha_documento,
+                   d.fecha_recepcion,
+                   d.fecha_plazo,
+                   d.id_estado_doc,
+                   d.id_flujo,
+                   td.tipo_documento,
+                   u.nombre AS resp_nombre, u.apellido_p AS resp_apellido_p, u.apellido_m AS resp_apellido_m,
+                   sc.nombre_subcontrato,
+                   rem.nombre_entidad AS rem_nombre, rem.apellido_entidad AS rem_apellido"
+           . $fromWhere;
+
+    $rawRows = ejecutarSelect($cnx, $sql, $base['params'], $base['types']);
+    if (isset($rawRows['error'])) {
+        return ['error' => $rawRows['error']];
+    }
+
+    // Obtener fechas de cierre registradas en bitácora para el contrato
+    $mapBitacora = [];
+    $sqlBit = "SELECT b.id_documento,
+                      MAX(NULLIF(b.fecha_emision, '0000-00-00')) AS max_fecha_bitacora
+               FROM bitacora b
+               INNER JOIN documento d ON b.id_documento = d.id_documento
+               INNER JOIN detalle_documento dd ON d.id_documento = dd.id_documento
+               LEFT JOIN subcontrato sc ON d.id_subcontrato = sc.id_subcontrato
+               LEFT JOIN usuario u ON dd.id_responsable = u.id_usuario
+               WHERE sc.id_contrato = ? OR u.id_contrato = ?
+               GROUP BY b.id_documento";
+    $rowsBit = ejecutarSelect($cnx, $sqlBit, [$userContractId, $userContractId], "ii");
+    if (is_array($rowsBit) && !isset($rowsBit['error'])) {
+        foreach ($rowsBit as $rb) {
+            if (!empty($rb['max_fecha_bitacora']) && esFechaValidaSgd($rb['max_fecha_bitacora'])) {
+                $mapBitacora[(int)$rb['id_documento']] = $rb['max_fecha_bitacora'];
+            }
+        }
+    }
+
+    // Obtener fechas de seguimiento (documentos de respuesta vinculados por numero_seguimiento)
+    $mapSeguimiento = [];
+    $sqlSeg = "SELECT s1.id_documento,
+                      MAX(COALESCE(NULLIF(d2.fecha_documento, '0000-00-00'), NULLIF(d2.fecha_recepcion, '0000-00-00'))) AS max_fecha_seg
+               FROM seguimiento s1
+               INNER JOIN seguimiento s2 ON s1.numero_seguimiento = s2.numero_seguimiento AND s1.numero_seguimiento <> 0 AND s2.id_documento <> s1.id_documento
+               INNER JOIN documento d2 ON s2.id_documento = d2.id_documento
+               INNER JOIN documento d1 ON s1.id_documento = d1.id_documento
+               LEFT JOIN subcontrato sc ON d1.id_subcontrato = sc.id_subcontrato
+               WHERE sc.id_contrato = ?
+               GROUP BY s1.id_documento";
+    $rowsSeg = ejecutarSelect($cnx, $sqlSeg, [$userContractId], "i");
+    if (is_array($rowsSeg) && !isset($rowsSeg['error'])) {
+        foreach ($rowsSeg as $rsg) {
+            if (!empty($rsg['max_fecha_seg']) && esFechaValidaSgd($rsg['max_fecha_seg'])) {
+                $mapSeguimiento[(int)$rsg['id_documento']] = $rsg['max_fecha_seg'];
+            }
+        }
+    }
+
+    $nombresMeses = [
+        1 => 'Enero', 2 => 'Febrero', 3 => 'Marzo', 4 => 'Abril',
+        5 => 'Mayo', 6 => 'Junio', 7 => 'Julio', 8 => 'Agosto',
+        9 => 'Septiembre', 10 => 'Octubre', 11 => 'Noviembre', 12 => 'Diciembre'
+    ];
+
+    $hoy = date('Y-m-d');
+    $seenIds = [];
+
+    $accGeneral = crearAcumuladorTiempos('Total General del Contrato');
+    $accPorResp = [];
+    $accPorTipo = [];
+    $accPorAnio = [];
+    $accPorMes = [];
+    $accPorFlujo = [];
+    $accPorSub = [];
+    $accPorRem = [];
+
+    foreach ($rawRows as $r) {
+        $idDoc = (int)$r['id_documento'];
+        if (isset($seenIds[$idDoc])) {
+            continue;
+        }
+        $seenIds[$idDoc] = true;
+
+        $estado = (int)$r['id_estado_doc'];
+        $flujo = (int)$r['id_flujo'];
+        $esPendiente = ($estado === 1);
+        $esCerrado = ($estado === 2);
+
+        $fDoc = esFechaValidaSgd($r['fecha_documento'] ?? '') ? substr(trim($r['fecha_documento']), 0, 10) : null;
+        $fRec = esFechaValidaSgd($r['fecha_recepcion'] ?? '') ? substr(trim($r['fecha_recepcion']), 0, 10) : null;
+        $fPlazo = esFechaValidaSgd($r['fecha_plazo'] ?? '') ? substr(trim($r['fecha_plazo']), 0, 10) : null;
+        $fBit = $mapBitacora[$idDoc] ?? null;
+        $fSeg = $mapSeguimiento[$idDoc] ?? null;
+
+        $fInicio = $fDoc ?? $fRec;
+        $fInicioRec = $fRec ?? $fDoc;
+
+        // 1. Días entre Fecha de Documento y Fecha de Recepción
+        $diasDocARec = null;
+        if ($fDoc !== null && $fRec !== null) {
+            $diffDR = diasEntreFechasSgd($fDoc, $fRec);
+            if ($diffDR !== null && $diffDR >= 0 && $diffDR <= 3650) {
+                $diasDocARec = $diffDR;
+            }
+        }
+
+        // 2. Días de plazo otorgado
+        $diasPlazoOtorgado = null;
+        if ($fInicio !== null && $fPlazo !== null) {
+            $diffPlazo = diasEntreFechasSgd($fInicio, $fPlazo);
+            if ($diffPlazo !== null && $diffPlazo >= 0 && $diffPlazo <= 3650) {
+                $diasPlazoOtorgado = $diffPlazo;
+            }
+        }
+
+        // 3. Tiempo de paso de Pendiente a Cerrado (para documentos cerrados)
+        $diasCierre = null;
+        $tieneCierreEfectivo = false;
+        $diasDocACierre = null;
+        $diasRecACierre = null;
+        $cumplePlazoCerrado = null;
+
+        if ($esCerrado) {
+            // Determinar fecha de cierre efectiva
+            $fCierre = null;
+            if ($fBit !== null) {
+                $fCierre = $fBit;
+                $tieneCierreEfectivo = true;
+            } elseif ($fSeg !== null && ($fInicio === null || $fSeg >= $fInicio)) {
+                $fCierre = $fSeg;
+                $tieneCierreEfectivo = true;
+            } elseif ($fRec !== null && $fDoc !== null && $fRec >= $fDoc) {
+                $fCierre = $fRec;
+                if ($fRec > $fDoc) {
+                    $tieneCierreEfectivo = true;
+                }
+            } else {
+                $fCierre = $fDoc ?? $fRec;
+            }
+
+            if ($fCierre !== null && $fInicio !== null) {
+                $dCierre = diasEntreFechasSgd($fInicio, $fCierre);
+                if ($dCierre !== null && $dCierre < 0 && $fInicioRec !== null) {
+                    $dCierre = diasEntreFechasSgd($fInicioRec, $fCierre);
+                }
+                if ($dCierre !== null && $dCierre >= 0 && $dCierre <= 3650) {
+                    $diasCierre = $dCierre;
+                    if ($dCierre > 0) {
+                        $tieneCierreEfectivo = true;
+                    }
+                }
+            }
+
+            if ($fDoc !== null && $fCierre !== null) {
+                $dDC = diasEntreFechasSgd($fDoc, $fCierre);
+                if ($dDC !== null && $dDC >= 0 && $dDC <= 3650) {
+                    $diasDocACierre = $dDC;
+                }
+            }
+            if ($fRec !== null && $fCierre !== null) {
+                $dRC = diasEntreFechasSgd($fRec, $fCierre);
+                if ($dRC !== null && $dRC >= 0 && $dRC <= 3650) {
+                    $diasRecACierre = $dRC;
+                }
+            }
+
+            if ($fCierre !== null && $fPlazo !== null) {
+                $cumplePlazoCerrado = ($fCierre <= $fPlazo);
+            }
+        }
+
+        // 4. Tiempo de espera acumulado (para documentos actualmente pendientes)
+        $diasEsperaPendiente = null;
+        $pendienteVencido = null;
+        if ($esPendiente && $fInicio !== null) {
+            $dEsp = diasEntreFechasSgd($fInicio, $hoy);
+            if ($dEsp !== null && $dEsp >= 0 && $dEsp <= 7300) {
+                $diasEsperaPendiente = $dEsp;
+            }
+            if ($fPlazo !== null) {
+                $pendienteVencido = ($hoy > $fPlazo);
+            }
+        }
+
+        // Etiquetas de agrupación
+        $nombreResp = trim(preg_replace('/\s+/u', ' ', ($r['resp_nombre'] ?? '') . ' ' . ($r['resp_apellido_p'] ?? '') . ' ' . ($r['resp_apellido_m'] ?? '')));
+        if ($nombreResp === '') {
+            $nombreResp = 'Sin responsable asignado';
+        }
+        $tipoNombre = !empty($r['tipo_documento']) ? trim($r['tipo_documento']) : 'Sin tipo asignado';
+        $flujoNombre = ($flujo === 1) ? 'Entrada' : (($flujo === 2) ? 'Salida' : 'Otro');
+        $subNombre = !empty($r['nombre_subcontrato']) ? trim($r['nombre_subcontrato']) : 'Sin subcontrato';
+        $remNombre = trim(preg_replace('/\s+/u', ' ', ($r['rem_nombre'] ?? '') . ' ' . ($r['rem_apellido'] ?? '')));
+        if ($remNombre === '') {
+            $remNombre = 'Sin remitente';
+        }
+
+        $anioKey = 'Sin fecha';
+        $ymKey = '0000-00';
+        $mesLabel = 'Sin fecha';
+        if ($fInicio !== null && preg_match('/^(\d{4})-(\d{2})/', $fInicio, $mYM)) {
+            $anioInt = (int)$mYM[1];
+            $mesInt = (int)$mYM[2];
+            $anioKey = (string)$anioInt;
+            $ymKey = sprintf('%04d-%02d', $anioInt, $mesInt);
+            $mesLabel = ($nombresMeses[$mesInt] ?? 'Mes ' . $mesInt) . ' ' . $anioInt;
+        }
+
+        // Registrar en acumulador general y por dimensiones
+        registrarDocEnAcumuladorTiempos($accGeneral, $esPendiente, $esCerrado, $diasCierre, $tieneCierreEfectivo, $diasDocACierre, $diasRecACierre, $diasDocARec, $diasPlazoOtorgado, $cumplePlazoCerrado, $diasEsperaPendiente, $pendienteVencido);
+
+        if (!isset($accPorResp[$nombreResp])) $accPorResp[$nombreResp] = crearAcumuladorTiempos($nombreResp);
+        registrarDocEnAcumuladorTiempos($accPorResp[$nombreResp], $esPendiente, $esCerrado, $diasCierre, $tieneCierreEfectivo, $diasDocACierre, $diasRecACierre, $diasDocARec, $diasPlazoOtorgado, $cumplePlazoCerrado, $diasEsperaPendiente, $pendienteVencido);
+
+        if (!isset($accPorTipo[$tipoNombre])) $accPorTipo[$tipoNombre] = crearAcumuladorTiempos($tipoNombre);
+        registrarDocEnAcumuladorTiempos($accPorTipo[$tipoNombre], $esPendiente, $esCerrado, $diasCierre, $tieneCierreEfectivo, $diasDocACierre, $diasRecACierre, $diasDocARec, $diasPlazoOtorgado, $cumplePlazoCerrado, $diasEsperaPendiente, $pendienteVencido);
+
+        if (!isset($accPorFlujo[$flujoNombre])) $accPorFlujo[$flujoNombre] = crearAcumuladorTiempos($flujoNombre);
+        registrarDocEnAcumuladorTiempos($accPorFlujo[$flujoNombre], $esPendiente, $esCerrado, $diasCierre, $tieneCierreEfectivo, $diasDocACierre, $diasRecACierre, $diasDocARec, $diasPlazoOtorgado, $cumplePlazoCerrado, $diasEsperaPendiente, $pendienteVencido);
+
+        if (!isset($accPorSub[$subNombre])) $accPorSub[$subNombre] = crearAcumuladorTiempos($subNombre);
+        registrarDocEnAcumuladorTiempos($accPorSub[$subNombre], $esPendiente, $esCerrado, $diasCierre, $tieneCierreEfectivo, $diasDocACierre, $diasRecACierre, $diasDocARec, $diasPlazoOtorgado, $cumplePlazoCerrado, $diasEsperaPendiente, $pendienteVencido);
+
+        if (!isset($accPorAnio[$anioKey])) $accPorAnio[$anioKey] = crearAcumuladorTiempos($anioKey);
+        registrarDocEnAcumuladorTiempos($accPorAnio[$anioKey], $esPendiente, $esCerrado, $diasCierre, $tieneCierreEfectivo, $diasDocACierre, $diasRecACierre, $diasDocARec, $diasPlazoOtorgado, $cumplePlazoCerrado, $diasEsperaPendiente, $pendienteVencido);
+
+        if (!isset($accPorMes[$ymKey])) $accPorMes[$ymKey] = crearAcumuladorTiempos($mesLabel);
+        registrarDocEnAcumuladorTiempos($accPorMes[$ymKey], $esPendiente, $esCerrado, $diasCierre, $tieneCierreEfectivo, $diasDocACierre, $diasRecACierre, $diasDocARec, $diasPlazoOtorgado, $cumplePlazoCerrado, $diasEsperaPendiente, $pendienteVencido);
+
+        if (!isset($accPorRem[$remNombre])) $accPorRem[$remNombre] = crearAcumuladorTiempos($remNombre);
+        registrarDocEnAcumuladorTiempos($accPorRem[$remNombre], $esPendiente, $esCerrado, $diasCierre, $tieneCierreEfectivo, $diasDocACierre, $diasRecACierre, $diasDocARec, $diasPlazoOtorgado, $cumplePlazoCerrado, $diasEsperaPendiente, $pendienteVencido);
+    }
+
+    // Finalizar y ordenar desgloses
+    $listaResp = array_map('finalizarAcumuladorTiempos', array_values($accPorResp));
+    usort($listaResp, function ($a, $b) { return $b['total_documentos'] <=> $a['total_documentos']; });
+
+    $listaTipo = array_map('finalizarAcumuladorTiempos', array_values($accPorTipo));
+    usort($listaTipo, function ($a, $b) { return $b['total_documentos'] <=> $a['total_documentos']; });
+
+    $listaFlujo = array_map('finalizarAcumuladorTiempos', array_values($accPorFlujo));
+    $listaSub = array_map('finalizarAcumuladorTiempos', array_values($accPorSub));
+    usort($listaSub, function ($a, $b) { return $b['total_documentos'] <=> $a['total_documentos']; });
+
+    krsort($accPorAnio);
+    $listaAnio = array_map('finalizarAcumuladorTiempos', array_values($accPorAnio));
+
+    krsort($accPorMes);
+    $listaMes = array_slice(array_map('finalizarAcumuladorTiempos', array_values($accPorMes)), 0, 24);
+
+    $listaRem = array_map('finalizarAcumuladorTiempos', array_values($accPorRem));
+    usort($listaRem, function ($a, $b) { return $b['total_documentos'] <=> $a['total_documentos']; });
+    $listaRem = array_slice($listaRem, 0, 15);
+
+    return [
+        'resumen_general_tiempos' => finalizarAcumuladorTiempos($accGeneral),
+        'clasificacion_principal_solicitada' => $filters['clasificar_por'] ?? 'general',
+        'tiempos_por_responsable' => $listaResp,
+        'tiempos_por_tipo_documento' => $listaTipo,
+        'tiempos_por_flujo' => $listaFlujo,
+        'tiempos_por_subcontrato' => $listaSub,
+        'tiempos_por_anio' => $listaAnio,
+        'tiempos_por_mes' => $listaMes,
+        'tiempos_por_remitente' => $listaRem
+    ];
+}
+
+/**
  * Función para acceder y buscar documentos del contrato del usuario logueado
  * filtrando por sus variables: responsable, remitente, destinatario, tipo, materia,
  * número, estado, flujo, subcontrato, fechas y palabras clave.
@@ -675,6 +1177,7 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
     $base = construirBaseWhereDocumentos($userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
 
     $sql = "SELECT d.id_documento, d.nombre_documento, d.fecha_documento, d.fecha_recepcion, d.fecha_plazo,
+                   CASE WHEN d.id_estado_doc = 2 THEN COALESCE(NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'), NULLIF(d.fecha_documento, '0000-00-00'), NULLIF(d.fecha_recepcion, '0000-00-00')) ELSE NULL END AS fecha_cierre,
                    CASE WHEN d.id_estado_doc = 1 THEN 'Pendiente' WHEN d.id_estado_doc = 2 THEN 'Cerrado' ELSE 'Otro' END AS estado_documento,
                    CASE WHEN d.id_flujo = 1 THEN 'Entrada' WHEN d.id_flujo = 2 THEN 'Salida' ELSE 'Otro' END AS flujo_documento,
                    dd.num_documento, dd.num_providencia, dd.num_proceso, dd.materia, dd.antecedente, dd.incluye, dd.comentario,
@@ -694,13 +1197,40 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
             . $base['from_joins']
             . $base['where'];
 
-    // Ordenar siempre por los documentos más recientes primero (2026 -> 2025 -> ...)
+    $ordenAntiguos = !empty($filters['orden_antiguos']);
+    $limiteSolicitado = (!empty($filters['limite']) && (int)$filters['limite'] >= 1) ? min((int)$filters['limite'], 50) : 20;
+    $sqlLimit = max(80, $limiteSolicitado * 4);
+
+    // Expresión de fecha de documento válida (priorizando siempre d.fecha_documento y usando d.fecha_recepcion solo si fecha_documento es inválida)
+    $fechaDocValidaExpr = "CASE
+        WHEN d.fecha_documento IS NOT NULL AND d.fecha_documento <> '0000-00-00' AND d.fecha_documento >= '1990-01-01' THEN d.fecha_documento
+        WHEN d.fecha_recepcion IS NOT NULL AND d.fecha_recepcion <> '0000-00-00' AND d.fecha_recepcion >= '1990-01-01' THEN d.fecha_recepcion
+        ELSE NULL
+    END";
+    $tieneFechaDocExpr = "CASE
+        WHEN d.fecha_documento IS NOT NULL AND d.fecha_documento <> '0000-00-00' AND d.fecha_documento >= '1990-01-01' THEN 0
+        WHEN d.fecha_recepcion IS NOT NULL AND d.fecha_recepcion <> '0000-00-00' AND d.fecha_recepcion >= '1990-01-01' THEN 1
+        ELSE 2
+    END";
+
     // Sin GROUP BY en SQL para evitar incompatibilidades con ONLY_FULL_GROUP_BY; deduplicamos por id_documento en PHP.
-    $sql .= " ORDER BY GREATEST(COALESCE(NULLIF(d.fecha_documento, '0000-00-00'), '1000-01-01'), COALESCE(NULLIF(d.fecha_recepcion, '0000-00-00'), '1000-01-01')) DESC,
-                       d.fecha_documento DESC,
-                       d.fecha_recepcion DESC,
-                       d.id_documento DESC
-              LIMIT 50";
+    if ($ordenAntiguos) {
+        // Ordenar por fecha de documento más antigua primero (ASC)
+        $sql .= " ORDER BY {$tieneFechaDocExpr} ASC,
+                           {$fechaDocValidaExpr} ASC,
+                           d.fecha_documento ASC,
+                           d.fecha_recepcion ASC,
+                           d.id_documento ASC
+                  LIMIT {$sqlLimit}";
+    } else {
+        // Ordenar por fecha de documento más reciente primero (DESC)
+        $sql .= " ORDER BY {$tieneFechaDocExpr} ASC,
+                           {$fechaDocValidaExpr} DESC,
+                           d.fecha_documento DESC,
+                           d.fecha_recepcion DESC,
+                           d.id_documento DESC
+                  LIMIT {$sqlLimit}";
+    }
 
     $rawRows = ejecutarSelect($cnx, $sql, $base['params'], $base['types']);
     if (isset($rawRows['error'])) {
@@ -714,7 +1244,7 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
         if (!isset($seenIds[$idDoc])) {
             $seenIds[$idDoc] = true;
             $docs[] = formatearFilaDocumento($r);
-            if (count($docs) >= 20) {
+            if (count($docs) >= $limiteSolicitado) {
                 break;
             }
         }
@@ -792,64 +1322,164 @@ function extraerJsonDeTexto($texto) {
     return null;
 }
 
-// Helper para llamar a Gemini
-function llamarGemini($apiKey, $prompt, $jsonMode = false) {
-    $model = defined('GEMINI_MODEL') ? GEMINI_MODEL : 'gemini-flash-latest';
-    $url = 'https://generativelanguage.googleapis.com/v1beta/models/' . $model . ':generateContent?key=' . $apiKey;
-    
-    $data = [
-        'contents' => [
-            [
-                'parts' => [
-                    ['text' => $prompt]
+// Helper para llamar a Gemini con resolución IPv4 forzada y fallback automático de modelo ante timeout
+function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25) {
+    $primaryModel = defined('GEMINI_MODEL') ? GEMINI_MODEL : 'gemini-flash-latest';
+    $modelsToTry = array_values(array_unique([$primaryModel, 'gemini-2.0-flash', 'gemini-1.5-flash']));
+    $lastError = 'Error desconocido al conectar con Gemini';
+
+    foreach ($modelsToTry as $idx => $model) {
+        $url = 'https://generativelanguage.googleapis.com/v1beta/models/' . $model . ':generateContent?key=' . $apiKey;
+
+        $data = [
+            'contents' => [
+                [
+                    'parts' => [
+                        ['text' => $prompt]
+                    ]
                 ]
+            ],
+            'generationConfig' => [
+                'temperature' => 0.2
             ]
-        ]
-    ];
-    
-    if ($jsonMode) {
-        $data['generationConfig'] = [
-            'responseMimeType' => 'application/json'
         ];
-    }
-    
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 45);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Content-Type: application/json'
-    ]);
-    
-    $response = curl_exec($ch);
-    if (curl_errno($ch)) {
-        $error = curl_error($ch);
+
+        if ($jsonMode) {
+            $data['generationConfig']['responseMimeType'] = 'application/json';
+        }
+
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_TIMEOUT, $idx === 0 ? $timeoutSec : 20);
+        if (defined('CURL_IPRESOLVE_V4')) {
+            curl_setopt($ch, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+        }
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json'
+        ]);
+
+        $response = curl_exec($ch);
+        if (curl_errno($ch)) {
+            $lastError = curl_error($ch);
+            curl_close($ch);
+            error_log("Advertencia Gemini ({$model}): {$lastError}. Probando siguiente modelo...");
+            continue;
+        }
+
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
-        return ['error' => $error];
+
+        if ($httpCode !== 200) {
+            $lastError = 'API returned HTTP code ' . $httpCode . '. Response: ' . $response;
+            if ($httpCode === 429 || $httpCode >= 500 || $httpCode === 404) {
+                error_log("Advertencia HTTP {$httpCode} en Gemini ({$model}). Probando siguiente modelo...");
+                continue;
+            }
+            return ['error' => $lastError];
+        }
+
+        $resObj = json_decode($response, true);
+        if (isset($resObj['candidates'][0]['content']['parts'][0]['text'])) {
+            return ['text' => $resObj['candidates'][0]['content']['parts'][0]['text'], 'model_used' => $model];
+        }
+        $lastError = 'Respuesta no válida de Gemini. API Response: ' . $response;
     }
-    
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    
-    if ($httpCode !== 200) {
-        return ['error' => 'API returned HTTP code ' . $httpCode . '. Response: ' . $response];
+
+    return ['error' => $lastError];
+}
+
+/**
+ * Formatea una respuesta clara en Markdown directamente en PHP si la API externa de IA
+ * llegara a presentar intermitencia o timeout en el Paso 2.
+ */
+function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters = []) {
+    if ($esConsultaTiempos && isset($dbResults['metricas_tiempos_fechas_documentos'])) {
+        $m = $dbResults['metricas_tiempos_fechas_documentos'];
+        $g = $m['resumen_general_tiempos'] ?? [];
+        $promCierre = $g['promedio_dias_pendiente_a_cerrado'] ?? 'S/I';
+        $promDocCierre = $g['promedio_dias_fecha_documento_a_cierre'] ?? 'S/I';
+        $promRecCierre = $g['promedio_dias_fecha_recepcion_a_cierre'] ?? 'S/I';
+        $promDocRec = $g['promedio_dias_emision_a_recepcion'] ?? 'S/I';
+        $promPlazo = $g['promedio_dias_plazo_otorgado'] ?? 'S/I';
+        $promEspera = $g['promedio_dias_espera_pendientes_actuales'] ?? 'S/I';
+
+        $md = "### Métricas de Tiempos entre Fechas de Documentos — Contrato **{$userContractName}**\n\n";
+        $md .= "- **Total de documentos analizados:** " . ($g['total_documentos'] ?? 0) . " (" . ($g['cerrados'] ?? 0) . " cerrados y " . ($g['pendientes'] ?? 0) . " pendientes)\n";
+        $md .= "- **Tiempo promedio en pasar de Pendiente a Cerrado:** **" . ($promCierre !== null ? "{$promCierre} días" : "Sin registros medibles") . "** (mínimo: " . ($g['minimo_dias_cierre'] ?? 0) . " días, máximo: " . ($g['maximo_dias_cierre'] ?? 0) . " días)\n";
+        if ($promDocCierre !== null) {
+            $md .= "- **Promedio desde Fecha del Documento hasta Cierre:** **{$promDocCierre} días**\n";
+        }
+        if ($promRecCierre !== null) {
+            $md .= "- **Promedio desde Fecha de Recepción hasta Cierre:** **{$promRecCierre} días**\n";
+        }
+        if ($promDocRec !== null) {
+            $md .= "- **Promedio desde Fecha de Emisión a Recepción:** **{$promDocRec} días**\n";
+        }
+        if ($promPlazo !== null) {
+            $md .= "- **Plazo promedio asignado (`fecha_plazo`):** **{$promPlazo} días** (Cumplimiento en cerrados: " . ($g['porcentaje_cumplimiento_plazo'] ?? 0) . "%)\n";
+        }
+        if ($promEspera !== null) {
+            $md .= "- **Tiempo promedio de espera en documentos actualmente Pendientes:** **{$promEspera} días**\n";
+        }
+
+        if (!empty($m['tiempos_por_responsable'])) {
+            $md .= "\n#### Desglose de Tiempos por Responsable / Usuario\n";
+            foreach (array_slice($m['tiempos_por_responsable'], 0, 15) as $r) {
+                $pC = $r['promedio_dias_pendiente_a_cerrado'] !== null ? ($r['promedio_dias_pendiente_a_cerrado'] . " días") : "S/I";
+                $pE = $r['promedio_dias_espera_pendientes_actuales'] !== null ? ($r['promedio_dias_espera_pendientes_actuales'] . " días") : "S/I";
+                $md .= "- **{$r['grupo']}**: {$r['total_documentos']} docs ({$r['cerrados']} cerrados, {$r['pendientes']} pendientes) | Promedio cierre: **{$pC}** | Espera pendientes: **{$pE}**\n";
+            }
+        }
+        return $md;
     }
-    
-    $resObj = json_decode($response, true);
-    if (isset($resObj['candidates'][0]['content']['parts'][0]['text'])) {
-        return ['text' => $resObj['candidates'][0]['content']['parts'][0]['text']];
-    } else {
-        return ['error' => 'Respuesta no válida de Gemini. API Response: ' . $response];
+
+    if ($esConsultaCantidad && isset($dbResults['estadisticas_historicas_documentos'])) {
+        $e = $dbResults['estadisticas_historicas_documentos'];
+        $md = "### Estadísticas de Documentos — Contrato **{$userContractName}**\n\n";
+        $md .= "- **Total de documentos:** **" . ($e['total_historico_documentos'] ?? 0) . "**\n";
+        $md .= "- **Pendientes:** " . ($e['desglose_por_estado']['Pendientes'] ?? 0) . " | **Cerrados:** " . ($e['desglose_por_estado']['Cerrados'] ?? 0) . "\n";
+        $md .= "- **Entrada:** " . ($e['desglose_por_flujo']['Entrada'] ?? 0) . " | **Salida:** " . ($e['desglose_por_flujo']['Salida'] ?? 0) . "\n";
+        return $md;
     }
+
+    if (!empty($dbResults['documentos'])) {
+        $md = "### Documentos encontrados en el contrato **{$userContractName}**\n\n";
+        foreach ($dbResults['documentos'] as $idx => $d) {
+            $num = $idx + 1;
+            $md .= "{$num}. **{$d['tipo_documento']} N° {$d['num_documento']}** (Providencia: {$d['num_providencia']})\n";
+            $md .= "   - **Materia:** {$d['materia']}\n";
+            $md .= "   - **Fecha Documento:** {$d['fecha_documento']} | **Fecha Recepción:** {$d['fecha_recepcion']}\n";
+            $md .= "   - **Estado:** {$d['estado_documento']} | **Responsable:** {$d['responsable']}\n";
+            $md .= "   - [Descargar Documento](negocio/descargarDocumento.php?idDocumento={$d['id_documento']})\n\n";
+        }
+        return $md;
+    }
+
+    return "No se encontraron registros que coincidan con los criterios consultados en el contrato **{$userContractName}**.";
 }
 
 $fechaActual = date('Y-m-d');
 $anioActual = date('Y');
 $listaRespTexto = implode(', ', $nombresResponsablesContrato);
+$queryLower = mb_strtolower($query, 'UTF-8');
+
+// Detectar de forma determinista en PHP si el usuario consulta qué/cuántos documentos cambiaron de pendiente a cerrado (o se cerraron) en un mes/año/fecha
+$filtrarPorFechaCierrePre = (bool)preg_match(
+    '/\b(cambi(?:aron|ó|o|an|ar)\s+(?:de\s+)?(?:estado\s+)?(?:de\s+)?pendientes?\s+a\s+cerrad[oa]s?|pasar(?:on)?\s+(?:de\s+)?(?:estado\s+)?(?:de\s+)?pendientes?\s+a\s+cerrad[oa]s?|pas[oó]\s+(?:de\s+)?(?:estado\s+)?pendiente\s+a\s+cerrado|se\s+cerraron|fueron\s+cerrad[oa]s?)\b/iu',
+    $query
+);
+
+// Detectar de forma determinista en PHP si es una consulta sobre tiempos/duración/promedios entre fechas
+$esConsultaTiemposPre = (bool)preg_match(
+    '/\b(cu[aá]nto\s+(?:tiempo\s+)?(?:tarda|tardan|demora|demoran|toma|toman|lleva|llevan)|tiempo\s+promedio|promedio\s+de\s+(?:d[ií]as|tiempo|cierre|respuesta|espera)|d[ií]as\s+en\s+promedio|tiempo\s+(?:en\s+)?pasar\s+de\s+pendiente\s+a\s+cerrado|tiempo\s+de\s+(?:cierre|respuesta|gesti[oó]n|espera|resoluci[oó]n|tramitaci[oó]n)|entre\s+fechas|diferencia\s+(?:de\s+)?(?:fechas|d[ií]as)|m[eé]tricas?\s+de\s+(?:tiempo|fechas|cierre|plazo)|cumplimiento\s+de\s+plazos?)\b/iu',
+    $query
+);
 
 // PASO 1: Clasificación de intención y extracción de variables/entidades con Gemini
+// (Con timeout acotado de 12s y fallback automático a NLU local en PHP para que Paso 1 NUNCA bloquee por timeout)
 $stage1Prompt = "Analiza la consulta en lenguaje natural de un usuario del Sistema de Gestión Documental (SGD) de Axioma y extrae los criterios y variables de búsqueda o clasificación estructurados.
 Fecha actual del sistema: {$fechaActual} (Año actual: {$anioActual}).
 El usuario autenticado pertenece exclusivamente al contrato: \"{$userContractName}\" (ID Contrato: {$userContractId}).
@@ -858,7 +1488,7 @@ Dentro de este contrato existen los siguientes usuarios/responsables registrados
 La base de datos contiene estas tablas principales (restringidas al contrato del usuario logueado):
 1. `contrato` y `subcontrato`: información del contrato y subcontratos del usuario (nombre_contrato, fecha_termino, nombre_subcontrato)
 2. `usuario`: información de usuarios/responsables del contrato (nombre, apellido_p, apellido_m, correo, nombre_usuario)
-3. `documento`, `detalle_documento`, `entidad` y `cargo`: información de documentos cargados en el contrato y sus variables:
+3. `documento`, `detalle_documento`, `bitacora`, `entidad` y `cargo`: información de documentos cargados en el contrato y sus variables:
    - `responsable`: usuario/cargo interno del contrato responsable del documento (por ejemplo: 'Jefe Asesoria', 'Encargada De Gestion', 'Jefe Area Proyectos', 'Asesor Legal', etc.)
    - `remitente`: persona/entidad o cargo que envía o emite el documento
    - `destinatario`: persona/entidad o cargo a quien va dirigido el documento
@@ -868,8 +1498,8 @@ La base de datos contiene estas tablas principales (restringidas al contrato del
 IMPORTANTE: Si el usuario menciona cargos o nombres como 'Jefe Asesoria', 'Jefe de Asesoría', 'Encargada de Gestión', 'Jefe Área Construcción', 'Asesor Legal', etc. (incluso con errores ortográficos o sin tildes), corrígelo e identifícalo como `responsable` (o `remitente`/`destinatario` según el contexto de la frase) DENTRO de su propio contrato, y NUNCA como un contrato distinto (`contrato_nombre` debe ser null).
 
 Debes retornar EXCLUSIVAMENTE un objeto JSON estructurado con las siguientes claves:
-- 'intent': Debe ser uno de: 'contract', 'user', 'document', 'general' (si se consulta o cuenta documentos por mes, año, tipo, responsable, remitente o destinatario, el intent DEBE ser 'document').
-- 'keywords': Un array de palabras clave específicas (strings) para búsquedas generales. Si los términos ya fueron ubicados en 'filters' (como año, mes, responsable, remitente, destinatario, tipo_documento, materia, etc.) o si es una consulta de conteo/clasificación o de 'últimos documentos', DEJA EL ARRAY VACÍO [].
+- 'intent': Debe ser uno de: 'contract', 'user', 'document', 'general' (si se consulta, lista, cuenta o mide tiempos entre fechas de documentos por antigüedad, mes, año, tipo, estado, responsable, remitente o destinatario, el intent DEBE ser 'document').
+- 'keywords': Un array de palabras clave específicas (strings) para búsquedas generales. Si los términos ya fueron ubicados en 'filters' (como año, mes, estado, responsable, remitente, destinatario, tipo_documento, materia, etc.) o si es una consulta de conteo/clasificación, métricas de tiempos o de 'últimos documentos' / 'documentos más antiguos', DEJA EL ARRAY VACÍO [].
 - 'filters': Un objeto con las variables extraídas de la consulta (corrigiendo errores de tipeo si aplica):
   - 'responsable': string o null (nombre o cargo del responsable del documento dentro del contrato, ej. 'Jefe Asesoria', sin artículos como 'el' o 'la')
   - 'remitente': string o null (nombre, apellido o cargo de la entidad remitente si se buscan documentos enviados/remitidos por alguien)
@@ -881,31 +1511,34 @@ Debes retornar EXCLUSIVAMENTE un objeto JSON estructurado con las siguientes cla
   - 'usuario_correo': string o null (si se busca un email de usuario específico)
   - 'doc_nombre': string o null (si se busca un nombre de archivo específico)
   - 'doc_numero': string o null (si se menciona algún número de documento, providencia o proceso)
-  - 'estado_doc': int o null (1 si pide documentos 'pendientes', 2 si pide documentos 'cerrados', null en otro caso)
+  - 'estado_doc': int o null (1 si pide documentos 'pendiente' o 'pendientes', 2 si pide documentos 'cerrado' o 'cerrados', null si pregunta por el paso de pendiente a cerrado o en general)
   - 'flujo_doc': int o null (1 si pide documentos de 'entrada', 2 si pide documentos de 'salida', null en otro caso)
   - 'solo_mis_documentos': boolean (true SOLO si el usuario pide explícitamente 'mis documentos' en primera persona, false cuando pregunta por otro responsable del contrato como 'Jefe Asesoria')
-  - 'es_consulta_cantidad': boolean (true si el usuario pregunta por cifras, cantidades, totales, conteos, clasificaciones estadísticas o 'cuántos/cuántas' documentos/registros existen; false si pide ver, listar o consultar el detalle de documentos)
-  - 'clasificar_por': string o null (dimensión principal por la que el usuario pide clasificar o agrupar el conteo de documentos: 'mes', 'anio', 'tipo_documento', 'estado', 'flujo', 'responsable', 'subcontrato', o null si solo pide un total general)
-  - 'anio': int o null (año de 4 dígitos si el usuario filtra por un año específico, ej. 2026 o 2025; null si no especifica un año concreto)
-  - 'mes': int o null (número de mes del 1 al 12 SOLO si el usuario filtra por un único mes específico, ej. enero = 1; si el usuario pide contar o clasificar 'por mes', pon null)
-  - 'orden_recientes': boolean (true si pide el último documento, los últimos documentos, más recientes o nuevos)
-  - 'fecha_desde': string o null (fecha YYYY-MM-DD SOLO si el usuario especifica un rango de fechas exacto; si usa 'anio' o 'mes', pon null)
-  - 'fecha_hasta': string o null (fecha YYYY-MM-DD SOLO si el usuario especifica un límite de fecha exacto; si usa 'anio' o 'mes', pon null)
+  - 'es_consulta_tiempos': boolean (true si el usuario pregunta cuánto tarda o demora en promedio un documento en pasar de pendiente a cerrado, tiempos de respuesta/cierre/espera, diferencia de días entre fechas o cumplimiento de plazos; false en otro caso)
+  - 'es_consulta_cantidad': boolean (true SOLO si el usuario pregunta por cifras, cantidades, totales, conteos, clasificaciones estadísticas o 'cuántos/cuántas' documentos existen; false si pide listar documentos o medir tiempos promedio)
+  - 'clasificar_por': string o null (dimensión principal por la que el usuario pide clasificar o agrupar el conteo o las métricas de tiempo: 'responsable', 'mes', 'anio', 'tipo_documento', 'estado', 'flujo', 'subcontrato', 'remitente', o null si es general)
+  - 'anio': int o null (año de 4 dígitos SOLO si el usuario menciona explícitamente un año en su consulta, ej. 2026 o 2025; null si no menciona ningún año)
+  - 'mes': int o null (número de mes del 1 al 12 SOLO si el usuario menciona explícitamente un mes específico, ej. enero = 1; null si no menciona ningún mes)
+  - 'orden_antiguos': boolean (true si pide el documento más antiguo, los documentos más antiguos, más viejos, primeros en el tiempo o de fecha de documento más antigua; false en caso contrario)
+  - 'orden_recientes': boolean (true si pide el último documento, los últimos documentos, más recientes o nuevos; false si pide los más antiguos)
+  - 'limite': int o null (cantidad de documentos a listar si el usuario pide un número específico, ej. 'Lista los 10 documentos más antiguos' -> 10; null si no especifica un número)
+  - 'fecha_desde': string o null (fecha YYYY-MM-DD SOLO si el usuario escribe explícitamente una fecha de inicio en su consulta; NUNCA inventes fechas del mes actual, pon null)
+  - 'fecha_hasta': string o null (fecha YYYY-MM-DD SOLO si el usuario escribe explícitamente una fecha límite en su consulta; pon null en cualquier otro caso)
 
 Consulta del usuario: \"" . $query . "\"";
 
-$stage1Res = llamarGemini($apiKey, $stage1Prompt, true);
+$stage1Res = llamarGemini($apiKey, $stage1Prompt, true, 12);
 
-if (isset($stage1Res['error'])) {
-    echo json_encode(['error' => 'Error al analizar la consulta con la IA (Paso 1): ' . $stage1Res['error']]);
-    mysqli_close($cnx);
-    exit;
+$searchParams = null;
+if (!isset($stage1Res['error']) && isset($stage1Res['text'])) {
+    $searchParams = extraerJsonDeTexto($stage1Res['text']);
+} else {
+    error_log("Paso 1 IA usó extractor NLU local en PHP por demora/error de red: " . ($stage1Res['error'] ?? 'sin respuesta'));
 }
 
-$searchParams = extraerJsonDeTexto($stage1Res['text']);
 if (!$searchParams) {
     $searchParams = [
-        'intent' => 'general',
+        'intent' => 'document',
         'keywords' => [],
         'filters' => []
     ];
@@ -915,16 +1548,60 @@ $intent = $searchParams['intent'] ?? 'general';
 $keywords = $searchParams['keywords'] ?? [];
 $filters = $searchParams['filters'] ?? [];
 
-$queryLower = mb_strtolower($query, 'UTF-8');
+// Si Paso 1 no extrajo responsable pero el usuario escribió el nombre de algún usuario/responsable del contrato en su consulta, lo detectamos en PHP
+if (empty($filters['responsable']) && !empty($usuariosContrato)) {
+    $qNorm = normalizarTexto($query);
+    foreach ($usuariosContrato as $uc) {
+        $nomCompleto = trim(preg_replace('/\s+/u', ' ', ($uc['nombre'] ?? '') . ' ' . ($uc['apellido_p'] ?? '') . ' ' . ($uc['apellido_m'] ?? '')));
+        $nomNorm = normalizarTexto($nomCompleto);
+        if ($nomNorm !== '' && mb_strlen($nomNorm) >= 4 && mb_strpos($qNorm, $nomNorm) !== false) {
+            $filters['responsable'] = $nomCompleto;
+            break;
+        }
+    }
+}
+
+// Detectar si es consulta de métricas de tiempo / duración entre fechas de documentos
+$pideQueOCualesDocumentos = (bool)preg_match('/\b(qu[eé]\s+documentos?|cu[aá]les?\s+(?:son\s+los\s+)?documentos?|lista(?:r)?\s+(?:los\s+)?documentos?|mostrar\s+(?:los\s+)?documentos?|mu[eé]strame\s+(?:los\s+)?documentos?)\b/iu', $query);
+$esConsultaTiempos = (!$pideQueOCualesDocumentos) && (!empty($filters['es_consulta_tiempos']) || $esConsultaTiemposPre);
+$filters['es_consulta_tiempos'] = $esConsultaTiempos;
+
+// Detectar si consulta por documentos que cambiaron de estado pendiente a cerrado (o se cerraron) en un período específico
+$filtrarPorFechaCierre = !$esConsultaTiempos && (!empty($filters['filtrar_por_fecha_cierre']) || $filtrarPorFechaCierrePre);
+$filters['filtrar_por_fecha_cierre'] = $filtrarPorFechaCierre;
+
+// Detectar si el usuario pide ordenar por fecha de documento más antigua (más antiguos / más viejos / primeros)
+$ordenAntiguos = !empty($filters['orden_antiguos']) ||
+    (bool)preg_match('/\b(antigu[oa]s?|viej[oa]s?|primer(?:o|os|a|as)?\s+(?:\d+\s+)?documentos?|menor\s+fecha|fechas?\s+(?:de\s+documentos?\s+)?m[aá]s\s+antigu[oa]s?)\b/iu', $query);
+$filters['orden_antiguos'] = $ordenAntiguos;
+if ($ordenAntiguos) {
+    $filters['orden_recientes'] = false;
+}
+
+// Detectar límite explícito de documentos a listar (ej. "Lista los 10 documentos más antiguos")
+if (preg_match('/\b(?:lista(?:r)?|muestra|mu[eé]strame|mostrar|dame|ver|buscar|busca|los|las|primeros|primeras|[uú]ltimos|[uú]ltimas|top)\s+(?:los\s+|las\s+)?(\d{1,2})\s+(?:documentos?|registros?|archivos?|pendientes?|cerrados?)\b/iu', $query, $mLim)) {
+    $filters['limite'] = (int)$mLim[1];
+}
 
 // Detectar si la consulta pregunta por cifras, cantidades, totales, conteos o clasificaciones estadísticas
-$esConsultaCantidad = !empty($filters['es_consulta_cantidad']) ||
-    (bool)preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|total(?:es)?|conteo|contar|estad[ií]sticas?|clasific\w*|desglos\w*|agrup\w*|n[uú]mero\s+total|n[uú]mero\s+de\s+documentos|registro\s+hist[oó]rico|por\s+mes(?:es)?|por\s+a[ñn]os?|por\s+tipos?)\b/iu', $query);
+$esConsultaCantidad = !$esConsultaTiempos && (
+    !empty($filters['es_consulta_cantidad']) ||
+    (bool)preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|total(?:es)?|conteo|contar|estad[ií]sticas?|clasific\w*|desglos\w*|agrup\w*|n[uú]mero\s+total|n[uú]mero\s+de\s+documentos|registro\s+hist[oó]rico|por\s+mes(?:es)?|por\s+a[ñn]os?|por\s+tipos?)\b/iu', $query)
+);
+
+// Si el usuario pide explícitamente listar/mostrar los N documentos (ej. "Lista los 10 documentos más antiguos") y no pregunta cuántos hay, no es consulta de cantidad
+$pideListarDocumentos = (bool)preg_match('/\b(lista(?:r)?|muestra|mu[eé]strame|mostrar|dame\s+los|ver\s+los|cu[aá]les\s+son\s+los)\b/iu', $query) &&
+                        !preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|conteo|estad[ií]sticas?|clasific\w*|desglos\w*|por\s+mes(?:es)?|por\s+a[ñn]os?|promedio|tarda|demora)\b/iu', $query);
+if ($pideListarDocumentos) {
+    $esConsultaCantidad = false;
+}
 $filters['es_consulta_cantidad'] = $esConsultaCantidad;
 
-// Detectar dimensión de clasificación solicitada (mes, año, tipo_documento, estado, flujo, responsable, subcontrato)
+// Detectar dimensión de clasificación solicitada (mes, año, tipo_documento, estado, flujo, responsable/usuario, subcontrato, remitente)
 if (empty($filters['clasificar_por'])) {
-    if (preg_match('/\b(por\s+mes(?:es)?|mensual(?:es|mente)?|cada\s+mes|mes\s+a\s+mes)\b/iu', $query)) {
+    if (preg_match('/\b(por\s+(?:responsables?|usuarios?|encargados?|personas?)|seg[uú]n\s+(?:su\s+)?(?:responsable|usuario))\b/iu', $query)) {
+        $filters['clasificar_por'] = 'responsable';
+    } elseif (preg_match('/\b(por\s+mes(?:es)?|mensual(?:es|mente)?|cada\s+mes|mes\s+a\s+mes)\b/iu', $query)) {
         $filters['clasificar_por'] = 'mes';
     } elseif (preg_match('/\b(por\s+a[ñn]os?|anual(?:es|mente)?|cada\s+a[ñn]o|a[ñn]o\s+a\s+a[ñn]o)\b/iu', $query)) {
         $filters['clasificar_por'] = 'anio';
@@ -934,10 +1611,25 @@ if (empty($filters['clasificar_por'])) {
         $filters['clasificar_por'] = 'estado';
     } elseif (preg_match('/\b(por\s+flujos?|seg[uú]n\s+(?:su\s+)?flujo)\b/iu', $query)) {
         $filters['clasificar_por'] = 'flujo';
-    } elseif (preg_match('/\b(por\s+responsables?|seg[uú]n\s+(?:su\s+)?responsable)\b/iu', $query)) {
-        $filters['clasificar_por'] = 'responsable';
     } elseif (preg_match('/\b(por\s+subcontratos?)\b/iu', $query)) {
         $filters['clasificar_por'] = 'subcontrato';
+    } elseif (preg_match('/\b(por\s+remitentes?)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'remitente';
+    }
+}
+
+// Detectar estado del documento explícito ('pendiente'/'pendientes' = 1, 'cerrado'/'cerrados' = 2),
+// Si consulta qué/cuántos documentos cambiaron de pendiente a cerrado ($filtrarPorFechaCierre), su estado actual es Cerrado (2).
+$mencionaAmbosEstados = (bool)(preg_match('/\bpendientes?\b/iu', $query) && preg_match('/\bcerrad[oa]s?\b/iu', $query));
+if ($filtrarPorFechaCierre) {
+    $filters['estado_doc'] = 2;
+} elseif ($mencionaAmbosEstados || $esConsultaTiempos) {
+    $filters['estado_doc'] = null;
+} elseif (empty($filters['estado_doc']) && ($filters['clasificar_por'] ?? null) !== 'estado') {
+    if (preg_match('/\bpendientes?\b/iu', $query)) {
+        $filters['estado_doc'] = 1;
+    } elseif (preg_match('/\bcerrad[oa]s?\b/iu', $query)) {
+        $filters['estado_doc'] = 2;
     }
 }
 
@@ -956,15 +1648,20 @@ foreach ($mapaMesesNombre as $nombreM => $numM) {
 }
 if ($mesExplicitoDetectado !== null && empty($filters['mes'])) {
     $filters['mes'] = $mesExplicitoDetectado;
-} elseif (($filters['clasificar_por'] ?? null) === 'mes' && $mesExplicitoDetectado === null) {
+} elseif ($mesExplicitoDetectado === null && (($filters['clasificar_por'] ?? null) === 'mes' || $ordenAntiguos || !empty($filters['orden_recientes']) || $esConsultaTiempos)) {
     $filters['mes'] = null;
 }
 
 // Detectar año explícito (ej. "en el año 2026", "del 2026", "2025")
-if (preg_match('/\b(20\d{2})\b/u', $queryLower, $mAnio)) {
+$anioExplicitoDetectado = null;
+if (preg_match('/\b(19\d{2}|20\d{2})\b/u', $queryLower, $mAnio)) {
+    $anioExplicitoDetectado = (int)$mAnio[1];
     if (empty($filters['anio'])) {
-        $filters['anio'] = (int)$mAnio[1];
+        $filters['anio'] = $anioExplicitoDetectado;
     }
+} elseif ($ordenAntiguos || !empty($filters['orden_recientes']) || $esConsultaTiempos) {
+    // Si pide los más antiguos, más recientes o métricas de tiempo sin mencionar un año en su consulta, no restringir al año actual
+    $filters['anio'] = null;
 }
 
 // Si ya tenemos filtro por año o mes entero, limpiamos fecha_desde / fecha_hasta redundantes
@@ -973,11 +1670,13 @@ if (!empty($filters['anio']) || !empty($filters['mes'])) {
     $filters['fecha_hasta'] = null;
 }
 
-// Si se detectaron filtros de variables de documentos (responsable, remitente, destinatario) o consulta de cantidades de documentos, asegurar intent document
+// Si se detectaron filtros de variables de documentos, consulta de tiempos o consulta de cantidades de documentos, asegurar intent document
 if (!empty($customVars['id_responsable']) || !empty($customVars['id_remitente']) || !empty($customVars['id_destinatario']) ||
     !empty($filters['responsable']) || !empty($filters['remitente']) || !empty($filters['destinatario']) ||
+    !empty($filters['estado_doc']) || !empty($filters['flujo_doc']) ||
+    !empty($filters['orden_antiguos']) || !empty($filters['orden_recientes']) ||
     !empty($filters['clasificar_por']) || !empty($filters['anio']) || !empty($filters['mes']) ||
-    $esConsultaCantidad) {
+    $esConsultaTiempos || $esConsultaCantidad) {
     $intent = 'document';
 }
 
@@ -988,6 +1687,10 @@ $stopwords = [
     'todos', 'todas', 'ver', 'dame', 'entregar', 'especifico', 'específicos', 'especifica', 'especificas',
     'buscar', 'busca', 'consultar', 'consulta', 'con', 'del', 'los', 'las', 'unos', 'unas', 'para', 'por',
     'sobre', 'materia', 'ultimo', 'ultimos', 'último', 'últimos', 'ultima', 'ultimas', 'última', 'últimas',
+    'antiguo', 'antiguos', 'antigua', 'antiguas', 'viejo', 'viejos', 'vieja', 'viejas', 'primer', 'primero', 'primeros', 'primera', 'primeras',
+    'mas', 'más', 'estan', 'están', 'esta', 'está', 'que', 'cual', 'cuál',
+    'tarda', 'tardan', 'demora', 'demoran', 'tiempo', 'tiempos', 'promedio', 'promedios', 'dia', 'dias', 'día', 'días',
+    'pasar', 'pasa', 'pasan', 'cierre', 'cerrar', 'cerrarse', 'espera', 'plazo', 'plazos', 'entre', 'diferencia', 'metricas', 'métricas',
     'reciente', 'recientes', 'nuevo', 'nuevos', 'nueva', 'nuevas', 'actual', 'actuales', 'registrado',
     'registrados', 'cargado', 'cargados', 'sistema', 'sgd', 'axioma', 'pendiente', 'pendientes',
     'cerrado', 'cerrados', 'entrada', 'salida', 'fecha', 'fechas', 'mes', 'meses', 'mensual', 'año', 'años', 'anio', 'anios', 'anual',
@@ -1004,17 +1707,17 @@ $filteredKeywords = [];
 if (is_array($keywords)) {
     foreach ($keywords as $kw) {
         $kwClean = preg_replace('/[^\p{L}\p{N}\s]/u', '', mb_strtolower(trim((string)$kw), 'UTF-8'));
-        if (!in_array($kwClean, $stopwords, true) && !preg_match('/^20\d{2}$/', $kwClean) && mb_strlen($kwClean) > 2) {
+        if (!in_array($kwClean, $stopwords, true) && !preg_match('/^\d+$/', $kwClean) && mb_strlen($kwClean) > 2) {
             $filteredKeywords[] = trim((string)$kw);
         }
     }
 }
 $keywords = $filteredKeywords;
 
-// Si el usuario consulta por "último documento" / "últimos documentos" / "recientes" o por cifras/cantidades históricas
+// Si el usuario consulta por "más antiguos" / "último documento" / "recientes" / métricas de tiempo o cifras históricas
 // sin haber escrito un año o mes explícito, limpiamos fecha_desde / fecha_hasta para abarcar todo el registro histórico.
-$mentionsExplicitYearOrMonth = ($mesExplicitoDetectado !== null) || !empty($filters['anio']);
-if (!$mentionsExplicitYearOrMonth && (preg_match('/(últim|ultim|recient|nuev)/u', $queryLower) || $esConsultaCantidad)) {
+$mentionsExplicitYearOrMonth = ($mesExplicitoDetectado !== null) || ($anioExplicitoDetectado !== null);
+if (!$mentionsExplicitYearOrMonth && ($ordenAntiguos || $esConsultaTiempos || preg_match('/(últim|ultim|recient|nuev|antigu|viej|primer)/iu', $queryLower) || $esConsultaCantidad)) {
     $filters['fecha_desde'] = null;
     $filters['fecha_hasta'] = null;
 }
@@ -1052,7 +1755,7 @@ if ($intent === 'contract' || $intent === 'general') {
     }
 }
 
-if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad) {
+if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad && !$esConsultaTiempos) {
     $usuariosFormateados = [];
     foreach ($usuariosContrato as $uc) {
         $nombreCompletoU = trim(preg_replace('/\s+/u', ' ', ($uc['nombre'] ?? '') . ' ' . ($uc['apellido_p'] ?? '') . ' ' . ($uc['apellido_m'] ?? '')));
@@ -1087,7 +1790,15 @@ if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad) {
 }
 
 if ($intent === 'document' || $intent === 'general') {
-    if ($esConsultaCantidad) {
+    if ($esConsultaTiempos) {
+        // Cuando pregunta por tiempos entre fechas (ej. cuánto tarda en pasar de pendiente a cerrado, tiempo promedio general o por responsable/usuario/tipo/mes/año)
+        $resTiempos = calcularMetricasTiemposDocumentos($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
+        if (!isset($resTiempos['error'])) {
+            $dbResults['metricas_tiempos_fechas_documentos'] = $resTiempos;
+        } else {
+            $dbResults['error_consulta_documentos'] = $resTiempos['error'];
+        }
+    } elseif ($esConsultaCantidad) {
         // Cuando pregunta por cifras, cantidades o clasificaciones: contar el registro histórico y NO retornar el detalle de documentos
         $resConteo = contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
         if (!isset($resConteo['error'])) {
@@ -1111,25 +1822,40 @@ if ($intent === 'document' || $intent === 'general') {
 mysqli_close($cnx);
 
 // PASO 3: Construcción de la respuesta final con Gemini (RAG)
-$instruccionesEspecificas = $esConsultaCantidad
-    ? "3. CONSULTA DE CIFRAS, CANTIDADES Y CLASIFICACIÓN DE DOCUMENTOS: El usuario está consultando por cifras, cantidades, totales o clasificación de documentos (por mes, año, tipo de documento, estado, flujo, responsable o subcontrato). Responde utilizando EXCLUSIVAMENTE los conteos contenidos en `estadisticas_historicas_documentos`:
+$instruccionesOrdenDetalle = $ordenAntiguos
+    ? "3. ORDEN POR FECHA DE DOCUMENTO MÁS ANTIGUA: El usuario solicitó los documentos más antiguos. La lista `documentos` ya viene ordenada desde la fecha de documento (`fecha_documento`) más antigua hacia adelante (`documentos[0]` es el más antiguo). Respeta estrictamente ese orden ascendente y muestra todos los documentos entregados en `documentos`."
+    : "3. ORDEN POR FECHA DE DOCUMENTO MÁS RECIENTE: La lista `documentos` viene ordenada desde la fecha de documento (`fecha_documento`) más reciente hacia atrás (`documentos[0]` es el más reciente). Si pide 'el último documento' en singular, destaca `documentos[0]`; si pide una lista de documentos, muéstralos respetando este orden.";
+
+if ($esConsultaTiempos) {
+    $instruccionesEspecificas = "3. CONSULTA DE TIEMPOS Y MÉTRICAS ENTRE FECHAS DE DOCUMENTOS: El usuario está consultando por tiempos de gestión, demora promedio en pasar de Pendiente a Cerrado, diferencia entre fechas de documentos o cumplimiento de plazos. Responde utilizando EXCLUSIVAMENTE los datos calculados en `metricas_tiempos_fechas_documentos`:
+   - Entrega primero las **métricas generales del contrato** (`resumen_general_tiempos`):
+     - **Tiempo promedio en pasar de Pendiente a Cerrado** (`promedio_dias_pendiente_a_cerrado` en días), indicando también el mínimo (`minimo_dias_cierre`), máximo (`maximo_dias_cierre`), el promedio medido desde `fecha_documento` a cierre (`promedio_dias_fecha_documento_a_cierre`) y desde `fecha_recepcion` a cierre (`promedio_dias_fecha_recepcion_a_cierre`).
+     - **Tiempo promedio entre Fecha del Documento y Fecha de Recepción** (`promedio_dias_emision_a_recepcion`).
+     - **Plazo promedio asignado** (`promedio_dias_plazo_otorgado`) y **cumplimiento de plazos** (`cerrados_en_plazo`, `cerrados_fuera_de_plazo`, `porcentaje_cumplimiento_plazo`).
+     - **Tiempo promedio de espera actual de los documentos Pendientes** (`promedio_dias_espera_pendientes_actuales`).
+   - Además, presenta el **desglose clasificado** según lo que haya pedido el usuario (o incluye un resumen por **Responsable / Usuario** de `tiempos_por_responsable` y por **Tipo de Documento** de `tiempos_por_tipo_documento`; si pregunta por mes, año, flujo, subcontrato o remitente, usa `tiempos_por_mes`, `tiempos_por_anio`, `tiempos_por_flujo`, `tiempos_por_subcontrato` o `tiempos_por_remitente`).
+4. PROHIBIDO INVENTAR CIFRAS: Usa exactamente los promedios en días y conteos provistos en `metricas_tiempos_fechas_documentos`.";
+} elseif ($esConsultaCantidad) {
+    $instruccionesEspecificas = "3. CONSULTA DE CIFRAS, CANTIDADES Y CLASIFICACIÓN DE DOCUMENTOS: El usuario está consultando por cifras, cantidades, totales o clasificación de documentos (por mes, año, tipo de documento, estado, flujo, responsable o subcontrato). Responde utilizando EXCLUSIVAMENTE los conteos contenidos en `estadisticas_historicas_documentos`:
    - Si pregunta por clasificación **por mes** (ej. 'cuántos documentos existen por mes en el año 2026'): presenta de forma clara y ordenada el desglose mensual de `desglose_por_mes` (indicando cada mes, su cantidad total, y si aporta valor, cuántos están pendientes/cerrados o por tipo), junto con el `total_historico_documentos` del período consultado.
    - Si pregunta por clasificación **por año**: presenta los datos de `desglose_por_anio`.
    - Si pregunta por clasificación **por tipo de documento**: presenta los datos de `desglose_por_tipo_documento` (Oficio, Carta, Informe, etc.).
    - Si pregunta por **estado**, **flujo**, **responsable** o **subcontrato**: utiliza `desglose_por_estado`, `desglose_por_flujo`, `desglose_por_responsable` o `desglose_por_subcontrato` según corresponda.
-4. PROHIBIDO RETORNAR DETALLE DE DOCUMENTOS: En consultas de cifras, cantidades y clasificaciones, entrega únicamente los números, totales y desgloses estadísticos solicitados. NO listes ni devuelvas el detalle individual de documentos (no incluyas números de documento individuales, materias ni enlaces de descarga)."
-    : "3. SI PIDE 'EL ÚLTIMO DOCUMENTO' (en singular): Muestra en primer lugar y de forma destacada el documento más reciente que encabeza la lista `documentos` (el primer elemento `documentos[0]`, que ya viene ordenado del más reciente de 2026 hacia atrás).
+4. PROHIBIDO RETORNAR DETALLE DE DOCUMENTOS: En consultas de cifras, cantidades y clasificaciones, entrega únicamente los números, totales y desgloses estadísticos solicitados. NO listes ni devuelvas el detalle individual de documentos (no incluyas números de documento individuales, materias ni enlaces de descarga).";
+} else {
+    $instruccionesEspecificas = "{$instruccionesOrdenDetalle}
 4. VARIABLES DE DOCUMENTOS: Cuando muestres uno o más documentos, incluye sus datos clave de forma ordenada:
    - **N° Documento / Providencia** (`num_documento` / `num_providencia`)
    - **Tipo de Documento** (`tipo_documento`)
    - **Materia** (`materia`)
-   - **Fecha del Documento** (`fecha_documento`) y **Fecha de Recepción** (`fecha_recepcion`)
+   - **Fecha del Documento** (`fecha_documento`), **Fecha de Recepción** (`fecha_recepcion`) y, si el documento está Cerrado, su **Fecha de Cierre** (`fecha_cierre`) y **Días en cerrar** (`dias_en_cerrar`)
    - **Estado** (`estado_documento`) y **Flujo** (`flujo_documento`)
    - **Responsable** (`responsable`)
    - **Remitente** (`remitente` y `cargo_remitente` si aplica)
    - **Destinatario** (`destinatario` y `cargo_destinatario` si aplica)
 5. ENLACES DE DESCARGA: Siempre que menciones un documento específico, incluye su enlace de descarga directa en formato Markdown exactamente así: `[Descargar Documento](negocio/descargarDocumento.php?idDocumento=ID)` donde ID es el `id_documento` correspondiente.
 6. Si la lista `documentos` está vacía para ese filtro, indícale amablemente que no se encontraron documentos con ese criterio dentro de su contrato y menciónale los responsables disponibles en `responsables_del_contrato` si buscaba por responsable.";
+}
 
 $stage2Prompt = "Eres el asistente de Inteligencia Artificial del Sistema de Gestión Documental (SGD) de Axioma.
 Fecha actual del sistema: {$fechaActual} (Año {$anioActual}).
@@ -1149,16 +1875,15 @@ Instrucciones obligatorias para elaborar tu respuesta:
 {$instruccionesEspecificas}
 7. NO utilices jerga técnica de base de datos ni menciones consultas SQL o estructuras JSON.";
 
-$stage2Res = llamarGemini($apiKey, $stage2Prompt);
+$stage2Res = llamarGemini($apiKey, $stage2Prompt, false, 30);
 
-if (isset($stage2Res['error'])) {
-    echo json_encode(['error' => 'Error al generar la respuesta con la IA (Paso 2): ' . $stage2Res['error']]);
-    exit;
-}
+$finalAnswer = isset($stage2Res['text'])
+    ? $stage2Res['text']
+    : generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters);
 
 echo json_encode([
     'success' => true,
-    'answer' => $stage2Res['text'],
+    'answer' => $finalAnswer,
     'intent' => $intent,
     'filters_detected' => $searchParams
 ]);
