@@ -1802,10 +1802,9 @@ function consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters =
         return in_array($norm, $valoresIgnorados, true) ? '' : $norm;
     };
 
-    // 1. Agrupar dentro del periodo consultado por num_documento, num_providencia y (tipo + materia + fecha)
+    // 1. Agrupar dentro del periodo consultado por num_documento y num_providencia
     $porNumDoc = [];
     $porNumProv = [];
-    $porMateriaFecha = [];
 
     foreach ($docsPeriodo as $idDoc => $doc) {
         $numNorm = $normalizarCodigo($doc['num_documento'] ?? '');
@@ -1816,14 +1815,6 @@ function consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters =
         $provNorm = $normalizarCodigo($doc['num_providencia'] ?? '');
         if ($provNorm !== '') {
             $porNumProv[$provNorm][$idDoc] = $doc['num_providencia'];
-        }
-
-        $matNorm = normalizarTexto($doc['materia'] ?? '');
-        $tipoNorm = normalizarTexto($doc['tipo_documento'] ?? '');
-        $fechaNorm = trim((string)($doc['fecha_documento'] ?? ''));
-        if (mb_strlen($matNorm) >= 6 && $fechaNorm !== '' && $fechaNorm !== 'No registra') {
-            $keyMat = $tipoNorm . '|' . $matNorm . '|' . $fechaNorm;
-            $porMateriaFecha[$keyMat][$idDoc] = true;
         }
     }
 
@@ -1955,20 +1946,6 @@ function consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters =
             $maxVeces = max($maxVeces, $vecesP);
             $idsAsociados = array_values(array_unique(array_merge($idsAsociados, $idsGrupoP)));
             $motivos[] = "N° de Providencia ({$doc['num_providencia']}) repetido {$vecesP} veces (IDs: " . implode(', ', $idsGrupoP) . ")";
-        }
-
-        $matNorm = normalizarTexto($doc['materia'] ?? '');
-        $tipoNorm = normalizarTexto($doc['tipo_documento'] ?? '');
-        $fechaNorm = trim((string)($doc['fecha_documento'] ?? ''));
-        if (mb_strlen($matNorm) >= 6 && $fechaNorm !== '' && $fechaNorm !== 'No registra') {
-            $keyMat = $tipoNorm . '|' . $matNorm . '|' . $fechaNorm;
-            if (isset($porMateriaFecha[$keyMat]) && count($porMateriaFecha[$keyMat]) > 1) {
-                $idsGrupoM = array_keys($porMateriaFecha[$keyMat]);
-                $vecesM = count($idsGrupoM);
-                $maxVeces = max($maxVeces, $vecesM);
-                $idsAsociados = array_values(array_unique(array_merge($idsAsociados, $idsGrupoM)));
-                $motivos[] = "Mismo Tipo, Materia y Fecha de Documento repetido {$vecesM} veces (IDs: " . implode(', ', $idsGrupoM) . ")";
-            }
         }
 
         if (!empty($duplicadosSeguimientoPorDoc[$idDoc])) {
