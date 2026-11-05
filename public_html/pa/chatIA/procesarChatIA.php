@@ -2886,12 +2886,20 @@ $tieneCriterioPropio = !empty($filters['responsable']) || !empty($filters['remit
     !empty($keywords) || $esConsultaRelacionados || $esConsultaTiempos || $esConsultaCantidad ||
     $intent === 'user' || $intent === 'contract';
 
-if ($generarExcel && !$tieneCriterioPropio && !empty($_SESSION['chat_ia_last_context'])) {
-    $lastCtx = $_SESSION['chat_ia_last_context'];
+$ctxTempFile = rtrim(sys_get_temp_dir(), '/\\') . '/sgd_chat_ctx_' . (int)$userId . '_' . (int)$userContractId . '.json';
+$lastCtxSaved = null;
+if (is_file($ctxTempFile)) {
+    $decodedCtx = json_decode((string)@file_get_contents($ctxTempFile), true);
+    if (is_array($decodedCtx)) {
+        $lastCtxSaved = $decodedCtx;
+    }
+}
+
+if ($generarExcel && !$tieneCriterioPropio && !empty($lastCtxSaved)) {
     $colsNuevas = $filters['columnas_excel'] ?? [];
-    $intent = $lastCtx['intent'] ?? 'document';
-    $filters = $lastCtx['filters'] ?? [];
-    $keywords = $lastCtx['keywords'] ?? [];
+    $intent = $lastCtxSaved['intent'] ?? 'document';
+    $filters = $lastCtxSaved['filters'] ?? [];
+    $keywords = $lastCtxSaved['keywords'] ?? [];
     $filters['generar_excel'] = true;
     if (!empty($colsNuevas)) {
         $filters['columnas_excel'] = $colsNuevas;
@@ -2901,13 +2909,13 @@ if ($generarExcel && !$tieneCriterioPropio && !empty($_SESSION['chat_ia_last_con
     $esConsultaCantidad = !empty($filters['es_consulta_cantidad']);
     $ordenAntiguos = !empty($filters['orden_antiguos']);
 } else {
-    // Guardar contexto actual en sesión por si en el siguiente turno pide exportar a Excel
-    $_SESSION['chat_ia_last_context'] = [
+    // Guardar contexto actual en archivo temporal por usuario/contrato por si en el siguiente turno pide exportar a Excel
+    @file_put_contents($ctxTempFile, json_encode([
         'intent'   => $intent,
         'filters'  => $filters,
         'keywords' => $keywords,
         'query'    => $query
-    ];
+    ], JSON_UNESCAPED_UNICODE));
 }
 
 $dbResults = [
@@ -3029,15 +3037,21 @@ if ($generarExcel) {
     );
 
     if (!empty($datosExcel['headers'])) {
-        if (!isset($_SESSION['chat_ia_exports']) || !is_array($_SESSION['chat_ia_exports'])) {
-            $_SESSION['chat_ia_exports'] = [];
+        $tmpDir = rtrim(sys_get_temp_dir(), '/\\');
+        // Limpiar archivos temporales de planillas antiguos (> 2 horas)
+        foreach ((array)@glob($tmpDir . '/sgd_chat_excel_*.json') as $oldFile) {
+            if (@filemtime($oldFile) < (time() - 7200)) {
+                @unlink($oldFile);
+            }
         }
-        // Conservar como máximo las últimas 15 planillas en sesión para no sobrecargar memoria
-        if (count($_SESSION['chat_ia_exports']) >= 15) {
-            array_shift($_SESSION['chat_ia_exports']);
-        }
-        $tokenExcel = bin2hex( function_exists('random_bytes') ? random_bytes(12) : openssl_random_pseudo_bytes(12) );
-        $_SESSION['chat_ia_exports'][$tokenExcel] = $datosExcel;
+
+        $tokenExcel = bin2hex(function_exists('random_bytes') ? random_bytes(12) : openssl_random_pseudo_bytes(12));
+        $datosExcel['user_id'] = (int)$userId;
+        $datosExcel['contract_id'] = (int)$userContractId;
+        $datosExcel['created_at'] = time();
+
+        $exportFilePath = $tmpDir . '/sgd_chat_excel_' . $tokenExcel . '.json';
+        @file_put_contents($exportFilePath, json_encode($datosExcel, JSON_UNESCAPED_UNICODE));
 
         $excelExportInfo = [
             'token'       => $tokenExcel,

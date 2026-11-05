@@ -1,4 +1,6 @@
 <?php
+require_once '../../data/Usuario.php';
+
 session_start();
 
 if (!isset($_SESSION['usuario'])) {
@@ -6,13 +8,31 @@ if (!isset($_SESSION['usuario'])) {
     die("Acceso denegado. Debe iniciar sesión en el sistema.");
 }
 
+$usuarioSession = $_SESSION['usuario'];
+$userContractId = is_object($usuarioSession) && method_exists($usuarioSession, 'getIdContrato')
+    ? (int)$usuarioSession->getIdContrato()
+    : 0;
+session_write_close();
+
 $token = isset($_GET['token']) ? trim((string)$_GET['token']) : '';
-if ($token === '' || !isset($_SESSION['chat_ia_exports'][$token])) {
+if ($token === '' || !preg_match('/^[a-f0-9]{16,64}$/i', $token)) {
     http_response_code(404);
     die("La planilla solicitada ya no se encuentra disponible o ha expirado. Por favor, solicítela nuevamente en el chat.");
 }
 
-$export = $_SESSION['chat_ia_exports'][$token];
+$exportFilePath = rtrim(sys_get_temp_dir(), '/\\') . '/sgd_chat_excel_' . $token . '.json';
+$export = null;
+if (is_file($exportFilePath)) {
+    $decoded = json_decode((string)@file_get_contents($exportFilePath), true);
+    if (is_array($decoded)) {
+        $export = $decoded;
+    }
+}
+
+if (!$export || ($userContractId > 0 && !empty($export['contract_id']) && (int)$export['contract_id'] !== $userContractId)) {
+    http_response_code(404);
+    die("La planilla solicitada ya no se encuentra disponible o ha expirado. Por favor, solicítela nuevamente en el chat.");
+}
 $headers = isset($export['headers']) && is_array($export['headers']) ? array_values($export['headers']) : [];
 $rows = isset($export['rows']) && is_array($export['rows']) ? array_values($export['rows']) : [];
 $sheetTitle = isset($export['sheet_title']) ? (string)$export['sheet_title'] : 'Datos Solicitados';
