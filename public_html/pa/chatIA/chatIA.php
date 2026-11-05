@@ -258,10 +258,81 @@ try {
     line-height: 1.5;
     word-break: break-word;
 }
-.sgd-message-content ul {
+.sgd-message-content ul,
+.sgd-message-content ol {
     padding-left: 20px;
     margin-top: 5px;
-    margin-bottom: 5px;
+    margin-bottom: 6px;
+}
+.sgd-message-content li {
+    margin-bottom: 3px;
+}
+.sgd-md-h1,
+.sgd-md-h2,
+.sgd-md-h3,
+.sgd-md-h4 {
+    color: #761c19;
+    font-weight: 700;
+    margin-top: 10px;
+    margin-bottom: 6px;
+    line-height: 1.3;
+}
+.sgd-md-h1 {
+    font-size: 16px;
+    border-bottom: 2px solid #761c19;
+    padding-bottom: 4px;
+}
+.sgd-md-h2 {
+    font-size: 15px;
+    border-bottom: 1px solid rgba(118, 28, 25, 0.35);
+    padding-bottom: 3px;
+}
+.sgd-md-h3 {
+    font-size: 14px;
+    border-bottom: 1px solid rgba(118, 28, 25, 0.25);
+    padding-bottom: 3px;
+}
+.sgd-md-h4 {
+    font-size: 13px;
+    color: #333333;
+    margin-top: 8px;
+    margin-bottom: 4px;
+}
+.sgd-message-content > .sgd-md-h1:first-child,
+.sgd-message-content > .sgd-md-h2:first-child,
+.sgd-message-content > .sgd-md-h3:first-child,
+.sgd-message-content > .sgd-md-h4:first-child {
+    margin-top: 0;
+}
+.sgd-md-code {
+    background-color: rgba(118, 28, 25, 0.1);
+    color: #761c19;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 12px;
+}
+.sgd-md-hr {
+    border: 0;
+    border-top: 1px solid rgba(0, 0, 0, 0.15);
+    margin: 8px 0;
+}
+.sgd-md-blockquote {
+    border-left: 3px solid #761c19;
+    background-color: rgba(255, 255, 255, 0.55);
+    padding: 6px 10px;
+    margin: 6px 0;
+    font-size: 12.5px;
+}
+.sgd-md-table {
+    background-color: #ffffff;
+    margin-top: 6px;
+    margin-bottom: 8px;
+    font-size: 12px;
+}
+.sgd-md-table th {
+    background-color: #761c19;
+    color: #ffffff;
 }
 .sgd-doc-actions {
     display: inline-block;
@@ -315,61 +386,190 @@ function sendSuggested(text) {
     sendMessage();
 }
 
-function formatMarkdown(text) {
-    if (!text) return "";
-
-    var html = text
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-
+function formatInlineMarkdown(str) {
+    if (!str) return "";
+    // Código en línea `texto`
+    str = str.replace(/`([^`]+)`/g, '<code class="sgd-md-code">$1</code>');
     // Negritas **texto**
-    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
+    str = str.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     // Cursivas *texto*
-    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-
-    // Listas con viñetas
-    var lines = html.split('\n');
-    var inList = false;
-    for (var i = 0; i < lines.length; i++) {
-        var line = lines[i].trim();
-        if (line.indexOf('* ') === 0 || line.indexOf('- ') === 0) {
-            var content = line.substring(2);
-            if (!inList) {
-                lines[i] = '<ul><li>' + content + '</li>';
-                inList = true;
-            } else {
-                lines[i] = '<li>' + content + '</li>';
-            }
-        } else {
-            if (inList) {
-                lines[i] = '</ul>' + lines[i];
-                inList = false;
-            }
-        }
-    }
-    if (inList) {
-        lines[lines.length - 1] = lines[lines.length - 1] + '</ul>';
-    }
-    html = lines.join('\n');
-
-    html = html.replace(/\n/g, '<br>');
-    html = html.replace(/<\/ul><br>/g, '</ul>');
-    html = html.replace(/<ul><br>/g, '<ul>');
-    html = html.replace(/<li><br>/g, '<li>');
-    html = html.replace(/<\/li><br>/g, '</li>');
-
+    str = str.replace(/(^|[^\*])\*([^\*\n]+)\*/g, '$1<em>$2</em>');
+    // Botón de descarga de Planilla Excel generada por la IA
+    var excelRegex = /\[(.*?)\]\((chatIA\/descargarExcelChatIA\.php\?token=([a-f0-9]+))\)/gi;
+    str = str.replace(excelRegex, function(match, label, url) {
+        return '<span class="sgd-doc-actions">' +
+               '<a href="' + url + '" target="_blank" class="btn btn-success btn-sm"><i class="fa fa-file-excel-o"></i>&nbsp;' + label + '</a>' +
+               '</span>';
+    });
     // Botones de Descarga y Detalle con el estilo estándar del SGD
     var linkRegex = /\[(.*?)\]\((negocio\/descargarDocumento\.php\?idDocumento=(\d+))\)/gi;
-    html = html.replace(linkRegex, function(match, label, url, id) {
+    str = str.replace(linkRegex, function(match, label, url, id) {
         return '<span class="sgd-doc-actions">' +
                '<a href="../' + url + '" target="_blank" class="btn btn-success btn-sm"><i class="fa fa-download"></i>&nbsp;Descargar</a>' +
                '<a href="buscador/detalleDocumentoBuscador.php?idDocumento=' + id + '" target="_blank" class="btn btn-primary btn-sm"><i class="fa fa-plus-circle"></i>&nbsp;Detalle</a>' +
                '</span>';
     });
+    return str;
+}
 
-    return html;
+function formatMarkdown(text) {
+    if (!text) return "";
+
+    var escaped = text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+    var lines = escaped.split(/\r?\n/);
+    var out = [];
+    var inUl = false;
+    var inOl = false;
+    var inTable = false;
+    var tableHeaderDone = false;
+
+    function closeLists() {
+        if (inUl) {
+            out.push('</ul>');
+            inUl = false;
+        }
+        if (inOl) {
+            out.push('</ol>');
+            inOl = false;
+        }
+    }
+
+    function closeTable() {
+        if (inTable) {
+            out.push('</tbody></table>');
+            inTable = false;
+            tableHeaderDone = false;
+        }
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+        var rawLine = lines[i];
+        var line = rawLine.trim();
+
+        // Línea vacía
+        if (line === '') {
+            closeLists();
+            closeTable();
+            if (out.length > 0) {
+                var lastItem = out[out.length - 1];
+                if (lastItem !== '<br>' && !/(<\/h[1-6]>|<\/ul>|<\/ol>|<\/table>|<hr[^>]*>|<\/blockquote>)$/.test(lastItem)) {
+                    out.push('<br>');
+                }
+            }
+            continue;
+        }
+
+        // Separador horizontal (---, ***, ___)
+        if (/^(\-{3,}|\*{3,}|_{3,})$/.test(line)) {
+            closeLists();
+            closeTable();
+            out.push('<hr class="sgd-md-hr">');
+            continue;
+        }
+
+        // Encabezados Markdown (#, ##, ###, ####, #####, ######)
+        var headingMatch = line.match(/^(#{1,6})\s+(.+?)\s*#*$/);
+        if (headingMatch) {
+            closeLists();
+            closeTable();
+            var level = headingMatch[1].length;
+            var headingContent = formatInlineMarkdown(headingMatch[2]);
+            var hClass = level === 1 ? 'sgd-md-h1' : (level === 2 ? 'sgd-md-h2' : (level === 3 ? 'sgd-md-h3' : 'sgd-md-h4'));
+            var tag = level <= 3 ? 'h4' : 'h5';
+            out.push('<' + tag + ' class="' + hClass + '">' + headingContent + '</' + tag + '>');
+            continue;
+        }
+
+        // Tablas Markdown (| col1 | col2 |)
+        if (/^\|.*\|$/.test(line)) {
+            closeLists();
+            // Ignorar fila separadora |---|---|
+            if (/^\|[\s\-:\|]+\|$/.test(line)) {
+                continue;
+            }
+            var cells = line.replace(/^\||\|$/g, '').split('|');
+            if (!inTable) {
+                out.push('<table class="table table-bordered table-condensed table-striped sgd-md-table">');
+                inTable = true;
+                tableHeaderDone = false;
+            }
+            if (!tableHeaderDone) {
+                var ths = '';
+                for (var c = 0; c < cells.length; c++) {
+                    ths += '<th>' + formatInlineMarkdown(cells[c].trim()) + '</th>';
+                }
+                out.push('<thead><tr>' + ths + '</tr></thead><tbody>');
+                tableHeaderDone = true;
+            } else {
+                var tds = '';
+                for (var c2 = 0; c2 < cells.length; c2++) {
+                    tds += '<td>' + formatInlineMarkdown(cells[c2].trim()) + '</td>';
+                }
+                out.push('<tr>' + tds + '</tr>');
+            }
+            continue;
+        } else {
+            closeTable();
+        }
+
+        // Blockquote (> texto)
+        var quoteMatch = line.match(/^&gt;\s*(.+)$/);
+        if (quoteMatch) {
+            closeLists();
+            out.push('<div class="sgd-md-blockquote">' + formatInlineMarkdown(quoteMatch[1]) + '</div>');
+            continue;
+        }
+
+        // Lista con viñetas (* , - , • )
+        var ulMatch = line.match(/^(\*|\-|•)\s+(.+)$/);
+        if (ulMatch) {
+            if (inOl) {
+                out.push('</ol>');
+                inOl = false;
+            }
+            if (!inUl) {
+                out.push('<ul>');
+                inUl = true;
+            }
+            out.push('<li>' + formatInlineMarkdown(ulMatch[2]) + '</li>');
+            continue;
+        }
+
+        // Lista numerada (1. , 2. )
+        var olMatch = line.match(/^\d+\.\s+(.+)$/);
+        if (olMatch) {
+            if (inUl) {
+                out.push('</ul>');
+                inUl = false;
+            }
+            if (!inOl) {
+                out.push('<ol>');
+                inOl = true;
+            }
+            out.push('<li>' + formatInlineMarkdown(olMatch[1]) + '</li>');
+            continue;
+        }
+
+        // Párrafo / línea normal
+        closeLists();
+        var formattedLine = formatInlineMarkdown(line);
+        if (out.length > 0) {
+            var prev = out[out.length - 1];
+            if (prev !== '<br>' && !/(<\/h[1-6]>|<\/ul>|<\/ol>|<\/table>|<hr[^>]*>|<\/div>)$/.test(prev)) {
+                out.push('<br>');
+            }
+        }
+        out.push(formattedLine);
+    }
+
+    closeLists();
+    closeTable();
+
+    return out.join('');
 }
 
 function sendMessage(overrideQuery, customVariables) {

@@ -1383,8 +1383,11 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
             . $base['where'];
 
     $ordenAntiguos = !empty($filters['orden_antiguos']);
-    $limiteSolicitado = (!empty($filters['limite']) && (int)$filters['limite'] >= 1) ? min((int)$filters['limite'], 50) : 20;
-    $sqlLimit = max(80, $limiteSolicitado * 4);
+    $esExportExcel = !empty($filters['generar_excel']);
+    $maxPermitido = $esExportExcel ? 2000 : 50;
+    $defaultLimite = $esExportExcel ? 1000 : 20;
+    $limiteSolicitado = (!empty($filters['limite']) && (int)$filters['limite'] >= 1) ? min((int)$filters['limite'], $maxPermitido) : $defaultLimite;
+    $sqlLimit = $esExportExcel ? max(2500, $limiteSolicitado * 2) : max(80, $limiteSolicitado * 4);
 
     // Expresión de fecha de documento válida (priorizando siempre d.fecha_documento y usando d.fecha_recepcion solo si fecha_documento es inválida)
     $fechaDocValidaExpr = "CASE
@@ -2057,10 +2060,455 @@ function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsul
     return "No se encontraron registros que coincidan con los criterios consultados en el contrato **{$userContractName}**.";
 }
 
+/**
+ * Extrae las columnas específicas que el usuario pidió incluir en la planilla Excel (si especificó campos concretos).
+ * Si el usuario no restringió columnas individuales, retorna un array vacío para usar solo las columnas propias de la consulta realizada.
+ */
+function extraerColumnasExcelSolicitadas($query, $columnasIA = []) {
+    $mapaSinonimos = [
+        'id_documento'       => ['id_documento', 'id documento', 'id del documento'],
+        'num_documento'      => ['num_documento', 'numero de documento', 'nro de documento', 'n° de documento', 'n° documento', 'numero documento', 'codigo de documento', 'folio'],
+        'tipo_documento'     => ['tipo_documento', 'tipo de documento', 'tipo documento', 'tipo'],
+        'num_providencia'    => ['num_providencia', 'numero de providencia', 'nro de providencia', 'n° providencia', 'providencia'],
+        'num_proceso'        => ['num_proceso', 'numero de proceso', 'codigo de proceso', 'n° de proceso', 'n° proceso', 'proceso'],
+        'materia'            => ['materia', 'asunto', 'materias', 'descripcion'],
+        'fecha_documento'    => ['fecha_documento', 'fecha de documento', 'fecha del documento', 'fecha documento', 'fecha de emision', 'fecha emision'],
+        'fecha_recepcion'    => ['fecha_recepcion', 'fecha de recepcion', 'fecha recepcion'],
+        'fecha_plazo'        => ['fecha_plazo', 'fecha de plazo', 'fecha plazo', 'plazo'],
+        'fecha_cierre'       => ['fecha_cierre', 'fecha de cierre', 'fecha cierre'],
+        'dias_en_cerrar'     => ['dias_en_cerrar', 'dias en cerrar', 'dias de cierre', 'demora', 'tiempo de cierre'],
+        'estado_documento'   => ['estado_documento', 'estado del documento', 'estado documento', 'estado'],
+        'flujo_documento'    => ['flujo_documento', 'flujo del documento', 'flujo'],
+        'responsable'        => ['responsable', 'responsables', 'usuario asignado', 'encargado'],
+        'correo_responsable' => ['correo_responsable', 'correo del responsable', 'email del responsable', 'correo responsable'],
+        'remitente'          => ['remitente', 'remitentes', 'enviado por', 'emisor'],
+        'cargo_remitente'    => ['cargo_remitente', 'cargo del remitente', 'cargo remitente'],
+        'destinatario'       => ['destinatario', 'destinatarios', 'dirigido a', 'receptor'],
+        'cargo_destinatario' => ['cargo_destinatario', 'cargo del destinatario', 'cargo destinatario'],
+        'nombre_subcontrato' => ['nombre_subcontrato', 'subcontrato'],
+        'antecedente'        => ['antecedente', 'antecedentes'],
+        'incluye'            => ['incluye'],
+        'comentario'         => ['comentario', 'comentarios', 'observaciones', 'observacion'],
+        'nombre_documento'   => ['nombre_documento', 'nombre de archivo', 'archivo']
+    ];
+
+    $seleccionadas = [];
+
+    // 1. Verificar columnas extraídas por Paso 1 de la IA
+    if (is_array($columnasIA) && !empty($columnasIA)) {
+        foreach ($columnasIA as $colItem) {
+            $colNorm = normalizarTexto((string)$colItem);
+            if ($colNorm === '') continue;
+            if (isset($mapaSinonimos[$colNorm])) {
+                $seleccionadas[$colNorm] = true;
+                continue;
+            }
+            foreach ($mapaSinonimos as $keyCanonical => $variantes) {
+                foreach ($variantes as $v) {
+                    if ($colNorm === normalizarTexto($v)) {
+                        $seleccionadas[$keyCanonical] = true;
+                        break 2;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Si el usuario menciona explícitamente en la frase qué columnas/campos incluir (ej. "solo con...", "con las columnas...", "que contenga...", "mostrando...")
+    $qNorm = normalizarTexto($query);
+    if (preg_match('/\b(columnas?|campos?|solo\s+con|[uú]nicamente\s+con|solamente\s+con|que\s+contenga|que\s+incluya|incluyendo\s+solo|mostrando\s+solo)\b/iu', $query)) {
+        foreach ($mapaSinonimos as $keyCanonical => $variantes) {
+            foreach ($variantes as $v) {
+                $vNorm = normalizarTexto($v);
+                if ($vNorm !== '' && mb_strlen($vNorm) >= 5 && preg_match('/\b' . preg_quote($vNorm, '/') . '\b/u', $qNorm)) {
+                    $seleccionadas[$keyCanonical] = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    return array_keys($seleccionadas);
+}
+
+/**
+ * Construye los encabezados y filas de la planilla Excel conteniendo ÚNICAMENTE la información
+ * que el usuario solicitó en su consulta.
+ */
+function construirDatosExcelSolicitados($dbResults, $intent, $filters, $esConsultaRelacionados, $esConsultaTiempos, $esConsultaCantidad, $query, $userContractName) {
+    $etiquetasColumnasDoc = [
+        'id_documento'       => 'ID Documento',
+        'num_documento'      => 'N° Documento',
+        'tipo_documento'     => 'Tipo Documento',
+        'num_providencia'    => 'N° Providencia',
+        'num_proceso'        => 'N° / Código Proceso',
+        'materia'            => 'Materia',
+        'fecha_documento'    => 'Fecha Documento',
+        'fecha_recepcion'    => 'Fecha Recepción',
+        'fecha_plazo'        => 'Fecha Plazo',
+        'fecha_cierre'       => 'Fecha Cierre',
+        'dias_en_cerrar'     => 'Días en Cerrar',
+        'estado_documento'   => 'Estado',
+        'flujo_documento'    => 'Flujo',
+        'responsable'        => 'Responsable',
+        'correo_responsable' => 'Correo Responsable',
+        'remitente'          => 'Remitente',
+        'cargo_remitente'    => 'Cargo Remitente',
+        'destinatario'       => 'Destinatario',
+        'cargo_destinatario' => 'Cargo Destinatario',
+        'nombre_subcontrato' => 'Subcontrato',
+        'antecedente'        => 'Antecedente',
+        'incluye'            => 'Incluye',
+        'comentario'         => 'Comentario',
+        'nombre_documento'   => 'Archivo'
+    ];
+
+    $columnasPersonalizadas = extraerColumnasExcelSolicitadas($query, $filters['columnas_excel'] ?? []);
+
+    // CASO 1: Consulta de Documentos Relacionados / Seguimiento / Duplicados
+    if ($esConsultaRelacionados && !empty($dbResults['analisis_documentos_relacionados']['analisis_por_documento'])) {
+        $analisis = $dbResults['analisis_documentos_relacionados']['analisis_por_documento'];
+        $pideSoloDuplicados = (bool)preg_match('/\bduplicad[oa]s?\b/iu', $query);
+
+        if ($pideSoloDuplicados) {
+            $headers = ['Documento Consultado', 'Tipo Doc. Relacionado', 'N° Doc. Relacionado', 'Materia', 'Fecha Documento', 'Estado', 'Responsable', 'Veces Repetido', 'Motivo Duplicado'];
+            $rows = [];
+            foreach ($analisis as $item) {
+                $baseDoc = $item['documento_consultado']['num_documento'] ?? '';
+                foreach ($item['duplicados_detectados'] ?? [] as $dup) {
+                    $rows[] = [
+                        $baseDoc,
+                        $dup['tipo_documento'] ?? '',
+                        $dup['num_documento'] ?? '',
+                        $dup['materia'] ?? '',
+                        $dup['fecha_documento'] ?? '',
+                        $dup['estado_documento'] ?? '',
+                        $dup['responsable'] ?? '',
+                        (int)($dup['veces_repetido'] ?? 0),
+                        $dup['tipo_duplicado'] ?? ''
+                    ];
+                }
+            }
+            return [
+                'sheet_title' => 'Relacionados Duplicados',
+                'filename'    => 'Documentos_Relacionados_Duplicados_' . date('Ymd_His') . '.xlsx',
+                'headers'     => $headers,
+                'rows'        => $rows
+            ];
+        }
+
+        $colsUsar = !empty($columnasPersonalizadas)
+            ? $columnasPersonalizadas
+            : ['tipo_documento', 'num_documento', 'num_providencia', 'num_proceso', 'materia', 'fecha_documento', 'estado_documento', 'flujo_documento', 'responsable', 'remitente', 'destinatario'];
+
+        $headers = ['Documento Consultado'];
+        foreach ($colsUsar as $ck) {
+            $headers[] = $etiquetasColumnasDoc[$ck] ?? $ck;
+        }
+        $headers[] = 'Veces en Seguimiento';
+        $headers[] = '¿Es Duplicado?';
+
+        $rows = [];
+        foreach ($analisis as $item) {
+            $baseLabel = ($item['documento_consultado']['tipo_documento'] ?? '') . ' ' . ($item['documento_consultado']['num_documento'] ?? '');
+            foreach ($item['documentos_relacionados'] ?? [] as $dr) {
+                $fila = [trim($baseLabel)];
+                foreach ($colsUsar as $ck) {
+                    $fila[] = $dr[$ck] ?? '';
+                }
+                $fila[] = (int)($dr['veces_en_seguimiento'] ?? 1);
+                $fila[] = !empty($dr['es_duplicado']) ? 'Sí' : 'No';
+                $rows[] = $fila;
+            }
+        }
+        return [
+            'sheet_title' => 'Documentos Relacionados',
+            'filename'    => 'Documentos_Relacionados_' . date('Ymd_His') . '.xlsx',
+            'headers'     => $headers,
+            'rows'        => $rows
+        ];
+    }
+
+    // CASO 2: Consulta de Tiempos / Demora entre Fechas
+    if ($esConsultaTiempos && isset($dbResults['metricas_tiempos_fechas_documentos'])) {
+        $m = $dbResults['metricas_tiempos_fechas_documentos'];
+        $clasif = $filters['clasificar_por'] ?? null;
+        $mapaKeyTiempos = [
+            'responsable'    => ['key' => 'tiempos_por_responsable',    'label' => 'Responsable / Usuario', 'sheet' => 'Tiempos por Responsable'],
+            'tipo_documento' => ['key' => 'tiempos_por_tipo_documento', 'label' => 'Tipo de Documento',     'sheet' => 'Tiempos por Tipo'],
+            'flujo'          => ['key' => 'tiempos_por_flujo',          'label' => 'Flujo',                 'sheet' => 'Tiempos por Flujo'],
+            'subcontrato'    => ['key' => 'tiempos_por_subcontrato',    'label' => 'Subcontrato',           'sheet' => 'Tiempos por Subcontrato'],
+            'anio'           => ['key' => 'tiempos_por_anio',           'label' => 'Año',                   'sheet' => 'Tiempos por Año'],
+            'mes'            => ['key' => 'tiempos_por_mes',            'label' => 'Mes',                   'sheet' => 'Tiempos por Mes'],
+            'remitente'      => ['key' => 'tiempos_por_remitente',      'label' => 'Remitente',             'sheet' => 'Tiempos por Remitente'],
+        ];
+
+        if ($clasif && isset($mapaKeyTiempos[$clasif]) && !empty($m[$mapaKeyTiempos[$clasif]['key']])) {
+            $metaT = $mapaKeyTiempos[$clasif];
+            $headers = [
+                $metaT['label'],
+                'Total Documentos',
+                'Cerrados',
+                'Pendientes',
+                'Promedio Días (Pendiente a Cerrado)',
+                'Mínimo Días Cierre',
+                'Máximo Días Cierre',
+                'Promedio Días (Fecha Doc. a Cierre)',
+                'Promedio Días (Recepción a Cierre)',
+                'Promedio Días Espera (Pendientes)',
+                '% Cumplimiento Plazo'
+            ];
+            $rows = [];
+            foreach ($m[$metaT['key']] as $r) {
+                $rows[] = [
+                    $r['grupo'] ?? '',
+                    (int)($r['total_documentos'] ?? 0),
+                    (int)($r['cerrados'] ?? 0),
+                    (int)($r['pendientes'] ?? 0),
+                    $r['promedio_dias_pendiente_a_cerrado'] ?? 'S/I',
+                    $r['minimo_dias_cierre'] ?? 'S/I',
+                    $r['maximo_dias_cierre'] ?? 'S/I',
+                    $r['promedio_dias_fecha_documento_a_cierre'] ?? 'S/I',
+                    $r['promedio_dias_fecha_recepcion_a_cierre'] ?? 'S/I',
+                    $r['promedio_dias_espera_pendientes_actuales'] ?? 'S/I',
+                    $r['porcentaje_cumplimiento_plazo'] !== null ? ($r['porcentaje_cumplimiento_plazo'] . '%') : 'S/I'
+                ];
+            }
+            return [
+                'sheet_title' => $metaT['sheet'],
+                'filename'    => 'Metricas_Tiempos_' . ucfirst($clasif) . '_' . date('Ymd_His') . '.xlsx',
+                'headers'     => $headers,
+                'rows'        => $rows
+            ];
+        }
+
+        // Si no pidió clasificar por un grupo específico, entregar el resumen general de tiempos solicitados
+        $g = $m['resumen_general_tiempos'] ?? [];
+        $headers = ['Métrica de Tiempo / Plazo', 'Valor'];
+        $rows = [
+            ['Total de documentos analizados', (int)($g['total_documentos'] ?? 0)],
+            ['Documentos Cerrados', (int)($g['cerrados'] ?? 0)],
+            ['Documentos Pendientes', (int)($g['pendientes'] ?? 0)],
+            ['Promedio días de Pendiente a Cerrado', ($g['promedio_dias_pendiente_a_cerrado'] !== null ? $g['promedio_dias_pendiente_a_cerrado'] . ' días' : 'S/I')],
+            ['Mínimo días en cerrar', ($g['minimo_dias_cierre'] ?? 'S/I')],
+            ['Máximo días en cerrar', ($g['maximo_dias_cierre'] ?? 'S/I')],
+            ['Promedio días desde Fecha Documento a Cierre', ($g['promedio_dias_fecha_documento_a_cierre'] !== null ? $g['promedio_dias_fecha_documento_a_cierre'] . ' días' : 'S/I')],
+            ['Promedio días desde Fecha Recepción a Cierre', ($g['promedio_dias_fecha_recepcion_a_cierre'] !== null ? $g['promedio_dias_fecha_recepcion_a_cierre'] . ' días' : 'S/I')],
+            ['Promedio días entre Emisión y Recepción', ($g['promedio_dias_emision_a_recepcion'] !== null ? $g['promedio_dias_emision_a_recepcion'] . ' días' : 'S/I')],
+            ['Plazo promedio asignado (fecha_plazo)', ($g['promedio_dias_plazo_otorgado'] !== null ? $g['promedio_dias_plazo_otorgado'] . ' días' : 'S/I')],
+            ['Porcentaje cumplimiento de plazo en cerrados', ($g['porcentaje_cumplimiento_plazo'] !== null ? $g['porcentaje_cumplimiento_plazo'] . '%' : 'S/I')],
+            ['Promedio días espera actual en Pendientes', ($g['promedio_dias_espera_pendientes_actuales'] !== null ? $g['promedio_dias_espera_pendientes_actuales'] . ' días' : 'S/I')]
+        ];
+        return [
+            'sheet_title' => 'Métricas de Tiempos',
+            'filename'    => 'Metricas_Tiempos_Documentos_' . date('Ymd_His') . '.xlsx',
+            'headers'     => $headers,
+            'rows'        => $rows
+        ];
+    }
+
+    // CASO 3: Consulta de Cantidades / Conteos / Clasificaciones por Atributos
+    if ($esConsultaCantidad && isset($dbResults['estadisticas_historicas_documentos'])) {
+        $e = $dbResults['estadisticas_historicas_documentos'];
+        $clasif = $filters['clasificar_por'] ?? null;
+
+        // Si el usuario filtró por un atributo específico (ej. num_proceso) y no especificó otra clasificación, o especificó clasificar_por:
+        $mapaDesgloses = [
+            'num_proceso'    => ['key' => 'desglose_por_num_proceso',     'campo' => 'num_proceso',     'label' => 'N° / Código de Proceso', 'sheet' => 'Por Código Proceso'],
+            'tipo_documento' => ['key' => 'desglose_por_tipo_documento',  'campo' => 'tipo_documento',  'label' => 'Tipo de Documento',      'sheet' => 'Por Tipo Documento'],
+            'responsable'    => ['key' => 'desglose_por_responsable',     'campo' => 'responsable',     'label' => 'Responsable',            'sheet' => 'Por Responsable'],
+            'remitente'      => ['key' => 'desglose_por_remitente',       'campo' => 'remitente',       'label' => 'Remitente',              'sheet' => 'Por Remitente'],
+            'destinatario'   => ['key' => 'desglose_por_destinatario',    'campo' => 'destinatario',    'label' => 'Destinatario',           'sheet' => 'Por Destinatario'],
+            'materia'        => ['key' => 'desglose_por_materia',         'campo' => 'materia',         'label' => 'Materia / Asunto',       'sheet' => 'Por Materia'],
+            'fecha'          => ['key' => 'desglose_por_fecha_documento', 'campo' => 'fecha_documento', 'label' => 'Fecha Documento',        'sheet' => 'Por Fecha'],
+            'mes'            => ['key' => 'desglose_por_mes',             'campo' => 'periodo',         'label' => 'Mes / Período',          'sheet' => 'Por Mes'],
+            'anio'           => ['key' => 'desglose_por_anio',            'campo' => 'anio',            'label' => 'Año',                    'sheet' => 'Por Año'],
+            'subcontrato'    => ['key' => 'desglose_por_subcontrato',     'campo' => 'subcontrato',     'label' => 'Subcontrato',            'sheet' => 'Por Subcontrato']
+        ];
+
+        if ($clasif === 'estado') {
+            return [
+                'sheet_title' => 'Por Estado',
+                'filename'    => 'Conteo_Por_Estado_' . date('Ymd_His') . '.xlsx',
+                'headers'     => ['Estado del Documento', 'Cantidad de Documentos'],
+                'rows'        => [
+                    ['Pendientes', (int)($e['desglose_por_estado']['Pendientes'] ?? 0)],
+                    ['Cerrados',   (int)($e['desglose_por_estado']['Cerrados'] ?? 0)],
+                    ['Total',      (int)($e['total_historico_documentos'] ?? 0)]
+                ]
+            ];
+        }
+
+        if ($clasif === 'flujo') {
+            return [
+                'sheet_title' => 'Por Flujo',
+                'filename'    => 'Conteo_Por_Flujo_' . date('Ymd_His') . '.xlsx',
+                'headers'     => ['Flujo del Documento', 'Cantidad de Documentos'],
+                'rows'        => [
+                    ['Entrada', (int)($e['desglose_por_flujo']['Entrada'] ?? 0)],
+                    ['Salida',  (int)($e['desglose_por_flujo']['Salida'] ?? 0)],
+                    ['Total',   (int)($e['total_historico_documentos'] ?? 0)]
+                ]
+            ];
+        }
+
+        // Si no indicó clasificar_por pero filtró por num_proceso puntual, mostrar el desglose de ese código de proceso
+        if (!$clasif && !empty($filters['num_proceso'])) {
+            $clasif = 'num_proceso';
+        }
+
+        if ($clasif && isset($mapaDesgloses[$clasif]) && isset($e[$mapaDesgloses[$clasif]['key']])) {
+            $metaD = $mapaDesgloses[$clasif];
+            // Verificar si el usuario pidió solo pendientes o solo cerrados en su conteo
+            $soloPend = ($filters['estado_doc'] ?? null) === 1;
+            $soloCerr = ($filters['estado_doc'] ?? null) === 2;
+
+            if ($soloPend) {
+                $headers = [$metaD['label'], 'Documentos Pendientes', 'Entrada', 'Salida'];
+            } elseif ($soloCerr) {
+                $headers = [$metaD['label'], 'Documentos Cerrados', 'Entrada', 'Salida'];
+            } else {
+                $headers = [$metaD['label'], 'Total Documentos', 'Pendientes', 'Cerrados', 'Entrada', 'Salida'];
+            }
+
+            $rows = [];
+            foreach ($e[$metaD['key']] as $item) {
+                $valGrupo = $item[$metaD['campo']] ?? '';
+                if ($soloPend) {
+                    $rows[] = [$valGrupo, (int)($item['pendientes'] ?? 0), (int)($item['entrada'] ?? 0), (int)($item['salida'] ?? 0)];
+                } elseif ($soloCerr) {
+                    $rows[] = [$valGrupo, (int)($item['cerrados'] ?? 0), (int)($item['entrada'] ?? 0), (int)($item['salida'] ?? 0)];
+                } else {
+                    $rows[] = [
+                        $valGrupo,
+                        (int)($item['total'] ?? 0),
+                        (int)($item['pendientes'] ?? 0),
+                        (int)($item['cerrados'] ?? 0),
+                        (int)($item['entrada'] ?? 0),
+                        (int)($item['salida'] ?? 0)
+                    ];
+                }
+            }
+            return [
+                'sheet_title' => $metaD['sheet'],
+                'filename'    => 'Clasificacion_' . ucfirst($clasif) . '_' . date('Ymd_His') . '.xlsx',
+                'headers'     => $headers,
+                'rows'        => $rows
+            ];
+        }
+
+        // Conteo general solicitado
+        $headers = ['Indicador Solicitado', 'Cantidad'];
+        $rows = [
+            ['Total Documentos que cumplen el criterio', (int)($e['total_historico_documentos'] ?? 0)],
+            ['Pendientes', (int)($e['desglose_por_estado']['Pendientes'] ?? 0)],
+            ['Cerrados',   (int)($e['desglose_por_estado']['Cerrados'] ?? 0)],
+            ['Flujo Entrada', (int)($e['desglose_por_flujo']['Entrada'] ?? 0)],
+            ['Flujo Salida',  (int)($e['desglose_por_flujo']['Salida'] ?? 0)]
+        ];
+        return [
+            'sheet_title' => 'Resumen Conteo',
+            'filename'    => 'Resumen_Conteo_Documentos_' . date('Ymd_His') . '.xlsx',
+            'headers'     => $headers,
+            'rows'        => $rows
+        ];
+    }
+
+    // CASO 4: Consulta de Usuarios del Contrato ($intent === 'user')
+    if ($intent === 'user' && isset($dbResults['usuarios'])) {
+        $headers = ['Nombre Completo', 'Nombre Usuario', 'Correo Electrónico', 'Perfil / Rol', 'Contrato'];
+        $rows = [];
+        foreach ($dbResults['usuarios'] as $u) {
+            $rows[] = [
+                $u['nombre_completo'] ?? '',
+                $u['nombre_usuario'] ?? '',
+                $u['correo'] ?? '',
+                $u['nombre_perfil'] ?? '',
+                $u['nombre_contrato'] ?? $userContractName
+            ];
+        }
+        return [
+            'sheet_title' => 'Usuarios del Contrato',
+            'filename'    => 'Usuarios_Contrato_' . date('Ymd_His') . '.xlsx',
+            'headers'     => $headers,
+            'rows'        => $rows
+        ];
+    }
+
+    // CASO 5: Consulta de Contrato / Subcontratos ($intent === 'contract')
+    if ($intent === 'contract' && isset($dbResults['subcontratos'])) {
+        $headers = ['ID Subcontrato', 'Nombre Subcontrato', 'Contrato Principal'];
+        $rows = [];
+        foreach ($dbResults['subcontratos'] as $sc) {
+            $rows[] = [
+                (int)($sc['id_subcontrato'] ?? 0),
+                $sc['nombre_subcontrato'] ?? '',
+                $userContractName
+            ];
+        }
+        return [
+            'sheet_title' => 'Subcontratos',
+            'filename'    => 'Subcontratos_' . date('Ymd_His') . '.xlsx',
+            'headers'     => $headers,
+            'rows'        => $rows
+        ];
+    }
+
+    // CASO 6: Listado de Documentos solicitados por el usuario ($dbResults['documentos'])
+    $docs = $dbResults['documentos'] ?? [];
+    if (!empty($columnasPersonalizadas)) {
+        $colsUsar = $columnasPersonalizadas;
+    } else {
+        $colsUsar = [
+            'num_documento',
+            'tipo_documento',
+            'num_providencia',
+            'num_proceso',
+            'materia',
+            'fecha_documento',
+            'fecha_recepcion',
+            'fecha_plazo',
+            'fecha_cierre',
+            'estado_documento',
+            'flujo_documento',
+            'responsable',
+            'remitente',
+            'destinatario'
+        ];
+    }
+
+    $headers = [];
+    foreach ($colsUsar as $ck) {
+        $headers[] = $etiquetasColumnasDoc[$ck] ?? $ck;
+    }
+
+    $rows = [];
+    foreach ($docs as $d) {
+        $fila = [];
+        foreach ($colsUsar as $ck) {
+            $fila[] = $d[$ck] ?? '';
+        }
+        $rows[] = $fila;
+    }
+
+    return [
+        'sheet_title' => 'Documentos Solicitados',
+        'filename'    => 'Documentos_SGD_' . date('Ymd_His') . '.xlsx',
+        'headers'     => $headers,
+        'rows'        => $rows
+    ];
+}
+
 $fechaActual = date('Y-m-d');
 $anioActual = date('Y');
 $listaRespTexto = implode(', ', $nombresResponsablesContrato);
 $queryLower = mb_strtolower($query, 'UTF-8');
+
+// Detectar de forma determinista en PHP si el usuario solicita generar/exportar/descargar una planilla Excel
+$generarExcelPre = (bool)preg_match(
+    '/\b(excel|planillas?|xlsx|xls|hojas?\s+de\s+c[aá]lculo|exporta(?:r|me|lo|los|las)?)\b/iu',
+    $query
+);
 
 // Detectar de forma determinista en PHP si el usuario consulta por documentos relacionados, seguimiento o duplicados en documentos relacionados
 $esConsultaRelacionadosPre = (bool)preg_match(
@@ -2172,6 +2620,8 @@ Debes retornar EXCLUSIVAMENTE un objeto JSON estructurado con las siguientes cla
   - 'limite': int o null (cantidad de documentos a listar si el usuario pide un número específico, ej. 'Lista los 10 documentos más antiguos' -> 10; null si no especifica un número)
   - 'fecha_desde': string o null (fecha YYYY-MM-DD SOLO si el usuario escribe explícitamente una fecha de inicio o fecha exacta en su consulta; NUNCA inventes fechas del mes actual, pon null)
   - 'fecha_hasta': string o null (fecha YYYY-MM-DD SOLO si el usuario escribe explícitamente una fecha límite o fecha exacta en su consulta; pon null en cualquier otro caso)
+  - 'generar_excel': boolean (true si el usuario pide generar, crear, exportar o descargar una planilla Excel, archivo Excel, hoja de cálculo, .xlsx o .xls; false en otro caso)
+  - 'columnas_excel': array de strings o [] (SOLO si el usuario especifica explícitamente qué columnas o campos puntuales desea dentro de la planilla Excel, ej. ['num_documento', 'materia', 'responsable']; si no restringe columnas individuales, deja el array vacío [])
 
 Consulta del usuario: \"" . $query . "\"";
 
@@ -2195,6 +2645,10 @@ if (!$searchParams) {
 $intent = $searchParams['intent'] ?? 'general';
 $keywords = $searchParams['keywords'] ?? [];
 $filters = $searchParams['filters'] ?? [];
+
+// Detectar si el usuario solicitó generar una planilla Excel
+$generarExcel = !empty($filters['generar_excel']) || $generarExcelPre;
+$filters['generar_excel'] = $generarExcel;
 
 // Si detectamos en PHP un número/código de proceso explícito (como "4.2.0.0"), aseguramos que quede en $filters['num_proceso']
 if ($numProcesoExplicitoDetectado !== null) {
@@ -2269,9 +2723,11 @@ $esConsultaCantidad = !$esConsultaRelacionados && !$esConsultaTiempos && (
     (bool)preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|total(?:es)?|conteo|contar|estad[ií]sticas?|clasific\w*|desglos\w*|agrup\w*|n[uú]mero\s+total|n[uú]mero\s+de\s+documentos|registro\s+hist[oó]rico|por\s+mes(?:es)?|por\s+a[ñn]os?|por\s+tipos?)\b/iu', $query)
 );
 
-// Si el usuario pide explícitamente listar/mostrar los N documentos (ej. "Lista los 10 documentos más antiguos") y no pregunta cuántos hay, no es consulta de cantidad
-$pideListarDocumentos = (bool)preg_match('/\b(lista(?:r)?|muestra|mu[eé]strame|mostrar|dame\s+los|ver\s+los|cu[aá]les\s+son\s+los)\b/iu', $query) &&
-                        !preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|conteo|estad[ií]sticas?|clasific\w*|desglos\w*|por\s+mes(?:es)?|por\s+a[ñn]os?|promedio|tarda|demora)\b/iu', $query);
+// Si el usuario pide explícitamente listar/mostrar o exportar a Excel los documentos (ej. "Genera una planilla excel con los documentos pendientes") y no pregunta cuántos hay, no es consulta de cantidad
+$pideListarDocumentos = (
+    (bool)preg_match('/\b(lista(?:r)?|muestra|mu[eé]strame|mostrar|dame\s+los|ver\s+los|cu[aá]les\s+son\s+los)\b/iu', $query) ||
+    ($generarExcel && (bool)preg_match('/\b(documentos?|cartas?|oficios?|informes?|memor[aá]ndums?|resoluciones?|providencias?)\b/iu', $query))
+) && !preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|conteo|estad[ií]sticas?|clasific\w*|desglos\w*|por\s+mes(?:es)?|por\s+a[ñn]os?|por\s+responsables?|por\s+procesos?|por\s+tipos?|por\s+remitentes?|por\s+destinatarios?|por\s+materias?|promedio|tarda|demora)\b/iu', $query);
 if ($pideListarDocumentos || $esConsultaRelacionados) {
     $esConsultaCantidad = false;
 }
@@ -2379,6 +2835,9 @@ $stopwords = [
     'todos', 'todas', 'ver', 'dame', 'entregar', 'especifico', 'específicos', 'especifica', 'especificas',
     'buscar', 'busca', 'consultar', 'consulta', 'con', 'del', 'los', 'las', 'unos', 'unas', 'para', 'por',
     'sobre', 'materia', 'materias', 'asunto', 'asuntos', 'proceso', 'procesos', 'codigo', 'código', 'codigos', 'códigos',
+    'excel', 'planilla', 'planillas', 'xlsx', 'xls', 'exportar', 'exporta', 'exportame', 'expórtame', 'exportalo', 'expórtalo',
+    'generar', 'genera', 'generame', 'genérame', 'descargar', 'descarga', 'descargame', 'descárgame', 'hoja', 'calculo', 'cálculo',
+    'columna', 'columnas', 'campo', 'campos', 'informacion', 'información', 'anterior', 'eso', 'esos', 'esas', 'estos', 'estas',
     'ultimo', 'ultimos', 'último', 'últimos', 'ultima', 'ultimas', 'última', 'últimas',
     'antiguo', 'antiguos', 'antigua', 'antiguas', 'viejo', 'viejos', 'vieja', 'viejas', 'primer', 'primero', 'primeros', 'primera', 'primeras',
     'mas', 'más', 'estan', 'están', 'esta', 'está', 'que', 'cual', 'cuál',
@@ -2415,6 +2874,40 @@ $mentionsExplicitYearOrMonthOrDate = ($mesExplicitoDetectado !== null) || ($anio
 if (!$mentionsExplicitYearOrMonthOrDate && ($esConsultaRelacionados || $ordenAntiguos || $esConsultaTiempos || preg_match('/(últim|ultim|recient|nuev|antigu|viej|primer)/iu', $queryLower) || $esConsultaCantidad)) {
     $filters['fecha_desde'] = null;
     $filters['fecha_hasta'] = null;
+}
+
+// Soporte conversacional para pedir Excel de la consulta inmediatamente anterior
+// (ej. "Generame una planilla excel con eso", "Pásalo a excel", "Descárgalo en una planilla")
+$tieneCriterioPropio = !empty($filters['responsable']) || !empty($filters['remitente']) || !empty($filters['destinatario']) ||
+    !empty($filters['doc_numero']) || !empty($filters['num_proceso']) || !empty($filters['num_providencia']) ||
+    !empty($filters['tipo_documento']) || !empty($filters['materia']) || !empty($filters['estado_doc']) ||
+    !empty($filters['flujo_doc']) || !empty($filters['clasificar_por']) || !empty($filters['anio']) ||
+    !empty($filters['mes']) || !empty($filters['fecha_desde']) || !empty($filters['fecha_hasta']) ||
+    !empty($keywords) || $esConsultaRelacionados || $esConsultaTiempos || $esConsultaCantidad ||
+    $intent === 'user' || $intent === 'contract';
+
+if ($generarExcel && !$tieneCriterioPropio && !empty($_SESSION['chat_ia_last_context'])) {
+    $lastCtx = $_SESSION['chat_ia_last_context'];
+    $colsNuevas = $filters['columnas_excel'] ?? [];
+    $intent = $lastCtx['intent'] ?? 'document';
+    $filters = $lastCtx['filters'] ?? [];
+    $keywords = $lastCtx['keywords'] ?? [];
+    $filters['generar_excel'] = true;
+    if (!empty($colsNuevas)) {
+        $filters['columnas_excel'] = $colsNuevas;
+    }
+    $esConsultaRelacionados = !empty($filters['es_consulta_relacionados']);
+    $esConsultaTiempos = !empty($filters['es_consulta_tiempos']);
+    $esConsultaCantidad = !empty($filters['es_consulta_cantidad']);
+    $ordenAntiguos = !empty($filters['orden_antiguos']);
+} else {
+    // Guardar contexto actual en sesión por si en el siguiente turno pide exportar a Excel
+    $_SESSION['chat_ia_last_context'] = [
+        'intent'   => $intent,
+        'filters'  => $filters,
+        'keywords' => $keywords,
+        'query'    => $query
+    ];
 }
 
 $dbResults = [
@@ -2521,8 +3014,57 @@ if ($intent === 'document' || $intent === 'general') {
     }
 }
 
-// Cerrar conexión
-//mysqli_close($cnx);
+// Si el usuario solicitó generar una planilla Excel, construimos la planilla con ÚNICAMENTE la información solicitada
+$excelExportInfo = null;
+if ($generarExcel) {
+    $datosExcel = construirDatosExcelSolicitados(
+        $dbResults,
+        $intent,
+        $filters,
+        $esConsultaRelacionados,
+        $esConsultaTiempos,
+        $esConsultaCantidad,
+        $query,
+        $userContractName
+    );
+
+    if (!empty($datosExcel['headers'])) {
+        if (!isset($_SESSION['chat_ia_exports']) || !is_array($_SESSION['chat_ia_exports'])) {
+            $_SESSION['chat_ia_exports'] = [];
+        }
+        // Conservar como máximo las últimas 15 planillas en sesión para no sobrecargar memoria
+        if (count($_SESSION['chat_ia_exports']) >= 15) {
+            array_shift($_SESSION['chat_ia_exports']);
+        }
+        $tokenExcel = bin2hex( function_exists('random_bytes') ? random_bytes(12) : openssl_random_pseudo_bytes(12) );
+        $_SESSION['chat_ia_exports'][$tokenExcel] = $datosExcel;
+
+        $excelExportInfo = [
+            'token'       => $tokenExcel,
+            'url'         => 'chatIA/descargarExcelChatIA.php?token=' . $tokenExcel,
+            'filename'    => $datosExcel['filename'],
+            'sheet_title' => $datosExcel['sheet_title'],
+            'rows_count'  => count($datosExcel['rows']),
+            'columns'     => $datosExcel['headers']
+        ];
+    }
+}
+
+// Para que el Paso 3 (Gemini) sea rápido incluso cuando se exportan cientos de documentos a Excel,
+// limitamos la muestra enviada al prompt a 20 documentos e informamos el total exportado.
+$dbResultsForPrompt = $dbResults;
+if (isset($dbResultsForPrompt['documentos']) && is_array($dbResultsForPrompt['documentos']) && count($dbResultsForPrompt['documentos']) > 20) {
+    $dbResultsForPrompt['total_documentos_encontrados'] = count($dbResultsForPrompt['documentos']);
+    $dbResultsForPrompt['documentos'] = array_slice($dbResultsForPrompt['documentos'], 0, 20);
+}
+if ($excelExportInfo !== null) {
+    $dbResultsForPrompt['planilla_excel_generada'] = [
+        'nombre_archivo' => $excelExportInfo['filename'],
+        'hoja' => $excelExportInfo['sheet_title'],
+        'total_filas_exportadas' => $excelExportInfo['rows_count'],
+        'columnas_incluidas' => $excelExportInfo['columns']
+    ];
+}
 
 // PASO 3: Construcción de la respuesta final con Gemini (RAG)
 $instruccionesOrdenDetalle = $ordenAntiguos
@@ -2574,6 +3116,10 @@ if ($esConsultaRelacionados) {
 6. Si la lista `documentos` está vacía para ese filtro, indícale amablemente que no se encontraron documentos con ese criterio dentro de su contrato y menciónale los responsables disponibles en `responsables_del_contrato` si buscaba por responsable.";
 }
 
+if ($excelExportInfo !== null) {
+    $instruccionesEspecificas .= "\n6. PLANILLA EXCEL GENERADA: Se ha generado una planilla Excel que contiene ÚNICAMENTE la información solicitada por el usuario ({$excelExportInfo['rows_count']} filas y las columnas: " . implode(', ', $excelExportInfo['columns']) . "). Confírmale brevemente al usuario qué información se incluyó en su planilla.";
+}
+
 $stage2Prompt = "Eres el asistente de Inteligencia Artificial del Sistema de Gestión Documental (SGD) de Axioma.
 Fecha actual del sistema: {$fechaActual} (Año {$anioActual}).
 Usuario en sesión: {$userFullName} (Usuario: {$userLoginName}).
@@ -2584,7 +3130,7 @@ Tu objetivo es responder de forma directa, profesional, clara y amable a la cons
 Consulta del usuario: \"" . $query . "\"
 
 Datos reales del sistema (filtrados por el contrato \"{$userContractName}\" del usuario en sesión):
-" . json_encode($dbResults, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "
+" . json_encode($dbResultsForPrompt, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "
 
 Instrucciones obligatorias para elaborar tu respuesta:
 1. Responde en español neutro de forma directa y clara. Si el usuario cometió algún error menor de ortografía o tilde al escribir el nombre de un responsable, remitente, destinatario o término (por ejemplo, 'Jefe Asesoria' por 'Jefe Asesoría'), entiéndelo con naturalidad y muéstrale directamente la información encontrada.
@@ -2617,9 +3163,21 @@ $finalAnswer = isset($stage2Res['text'])
     ? $stage2Res['text']
     : generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters, $esConsultaRelacionados);
 
+if ($excelExportInfo !== null) {
+    $colsTexto = implode(', ', $excelExportInfo['columns']);
+    $bloqueExcelMd = "\n\n---\n### 📊 Planilla Excel Generada\n"
+        . "- **Registros incluidos:** **{$excelExportInfo['rows_count']}**\n"
+        . "- **Columnas incluidas:** {$colsTexto}\n"
+        . "- [Descargar Planilla Excel ({$excelExportInfo['filename']})]({$excelExportInfo['url']})";
+    if (strpos($finalAnswer, 'descargarExcelChatIA.php') === false) {
+        $finalAnswer .= $bloqueExcelMd;
+    }
+}
+
 echo json_encode([
     'success' => true,
     'answer' => $finalAnswer,
     'intent' => $intent,
-    'filters_detected' => $searchParams
+    'filters_detected' => $searchParams,
+    'excel_export' => $excelExportInfo
 ]);
