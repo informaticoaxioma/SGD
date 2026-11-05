@@ -357,12 +357,42 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
         $types .= "ss";
     }
 
+    if (!empty($filters['num_proceso'])) {
+        $numProcClean = trim((string)$filters['num_proceso']);
+        $where .= " AND " . sqlLikeUtf8('dd.num_proceso');
+        $params[] = "%" . $numProcClean . "%";
+        $types .= "s";
+    }
+
+    if (!empty($filters['num_providencia'])) {
+        $numProvClean = trim((string)$filters['num_providencia']);
+        $where .= " AND " . sqlLikeUtf8('dd.num_providencia');
+        $params[] = "%" . $numProvClean . "%";
+        $types .= "s";
+    }
+
     if (!empty($filters['doc_numero'])) {
-        $where .= " AND (" . sqlLikeUtf8('dd.num_documento') . " OR " . sqlLikeUtf8('dd.num_providencia') . " OR " . sqlLikeUtf8('dd.num_proceso') . ")";
-        $params[] = "%" . $filters['doc_numero'] . "%";
-        $params[] = "%" . $filters['doc_numero'] . "%";
-        $params[] = "%" . $filters['doc_numero'] . "%";
-        $types .= "sss";
+        $docNumRaw = trim((string)$filters['doc_numero']);
+        $variantesNum = [$docNumRaw];
+        // Si el código tiene prefijos con "/" o "-" (ej. "SCINC/IF/1140/2026"), agregar también el sufijo corto (ej. "1140/2026")
+        $segmentosSlash = array_values(array_filter(array_map('trim', explode('/', $docNumRaw)), function ($s) { return $s !== ''; }));
+        if (count($segmentosSlash) >= 3) {
+            $sufijoDos = $segmentosSlash[count($segmentosSlash) - 2] . '/' . $segmentosSlash[count($segmentosSlash) - 1];
+            if (!in_array($sufijoDos, $variantesNum, true)) {
+                $variantesNum[] = $sufijoDos;
+            }
+        }
+        $orNumParts = [];
+        foreach ($variantesNum as $vNum) {
+            $orNumParts[] = "(" . sqlLikeUtf8('dd.num_documento') . " OR " . sqlLikeUtf8('dd.num_providencia') . " OR " . sqlLikeUtf8('dd.num_proceso') . " OR " . sqlLikeUtf8('d.nombre_documento') . ")";
+            $likeV = "%" . $vNum . "%";
+            $params[] = $likeV;
+            $params[] = $likeV;
+            $params[] = $likeV;
+            $params[] = $likeV;
+            $types .= "ssss";
+        }
+        $where .= " AND (" . implode(" OR ", $orNumParts) . ")";
     }
 
     // Expresión de fecha efectiva del documento (o fecha_cierre cuando se consulta por documentos que pasaron a cerrado en un mes/año)
@@ -400,6 +430,7 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
                             !empty($filters['estado_doc']) || !empty($filters['flujo_doc']) ||
                             !empty($filters['tipo_documento']) || !empty($filters['subcontrato']) || !empty($filters['materia']) ||
                             !empty($filters['doc_nombre']) || !empty($filters['doc_numero']) ||
+                            !empty($filters['num_proceso']) || !empty($filters['num_providencia']) ||
                             !empty($filters['anio']) || !empty($filters['mes']) ||
                             !empty($filters['fecha_desde']) || !empty($filters['fecha_hasta']) ||
                             !empty($filters['filtrar_por_fecha_cierre']) ||
@@ -442,8 +473,9 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
 
 /**
  * Cuenta y clasifica el registro histórico completo de documentos (cifras y cantidades)
- * por mes, año, tipo de documento, estado, flujo, responsable y subcontrato,
- * en una sola consulta rápida sin retornar el detalle individual de documentos.
+ * a través de TODOS los atributos del documento: tipo de documento, materia, remitente,
+ * destinatario, responsable, fechas (año, mes, fecha exacta), número/código de proceso,
+ * estado, flujo y subcontrato.
  */
 function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = []) {
     $base = construirBaseWhereDocumentos($userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
@@ -454,6 +486,7 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
     $sql = "SELECT d.id_documento,
                    d.fecha_documento,
                    d.fecha_recepcion,
+                   d.fecha_plazo,
                    CASE WHEN d.id_estado_doc = 2 THEN
                        COALESCE(
                            NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'),
@@ -463,8 +496,14 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
                    ELSE NULL END AS fecha_cierre,
                    d.id_estado_doc,
                    d.id_flujo,
+                   dd.num_documento,
+                   dd.num_providencia,
+                   dd.num_proceso,
+                   dd.materia,
                    td.tipo_documento,
                    u.nombre AS resp_nombre, u.apellido_p AS resp_apellido_p, u.apellido_m AS resp_apellido_m,
+                   rem.nombre_entidad AS rem_nombre, rem.apellido_entidad AS rem_apellido, crem.cargo AS cargo_remitente,
+                   dest.nombre_entidad AS dest_nombre, dest.apellido_entidad AS dest_apellido, cdest.cargo AS cargo_destinatario,
                    sc.nombre_subcontrato"
            . $fromWhere;
 
@@ -490,8 +529,13 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
 
     $mapAnio = [];
     $mapMes = [];
+    $mapFecha = [];
     $mapTipo = [];
     $mapResp = [];
+    $mapRemitente = [];
+    $mapDestinatario = [];
+    $mapProceso = [];
+    $mapMateria = [];
     $mapSub = [];
 
     // Si se filtró por un año específico (ej. 2026) y no por un único mes, pre-inicializamos los 12 meses de ese año
@@ -544,6 +588,7 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
         $anioDoc = 'Sin fecha';
         $mesNum = 0;
         $ymKey = '0000-00';
+        $fechaExactaKey = 'Sin fecha';
         if ($fechaDoc !== null && preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $fechaDoc, $mFecha)) {
             $anioInt = (int)$mFecha[1];
             $mesInt = (int)$mFecha[2];
@@ -551,6 +596,7 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
                 $anioDoc = $anioInt;
                 $mesNum = $mesInt;
                 $ymKey = sprintf('%04d-%02d', $anioInt, $mesInt);
+                $fechaExactaKey = substr($fechaDoc, 0, 10);
                 if ($primeraFecha === null || $fechaDoc < $primeraFecha) {
                     $primeraFecha = $fechaDoc;
                 }
@@ -565,6 +611,25 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
         if ($nombreResp === '') {
             $nombreResp = 'Sin responsable asignado';
         }
+
+        $nombreRem = trim(preg_replace('/\s+/u', ' ', ($r['rem_nombre'] ?? '') . ' ' . ($r['rem_apellido'] ?? '')));
+        $cargoRem = trim((string)($r['cargo_remitente'] ?? ''));
+        $etiquetaRem = $nombreRem !== '' ? ($cargoRem !== '' ? "{$nombreRem} ({$cargoRem})" : $nombreRem) : ($cargoRem !== '' ? $cargoRem : 'Sin remitente');
+
+        $nombreDest = trim(preg_replace('/\s+/u', ' ', ($r['dest_nombre'] ?? '') . ' ' . ($r['dest_apellido'] ?? '')));
+        $cargoDest = trim((string)($r['cargo_destinatario'] ?? ''));
+        $etiquetaDest = $nombreDest !== '' ? ($cargoDest !== '' ? "{$nombreDest} ({$cargoDest})" : $nombreDest) : ($cargoDest !== '' ? $cargoDest : 'Sin destinatario');
+
+        $numProcesoVal = !empty($r['num_proceso']) ? trim(preg_replace('/\s+/u', ' ', (string)$r['num_proceso'])) : 'Sin código de proceso';
+        if ($numProcesoVal === '') {
+            $numProcesoVal = 'Sin código de proceso';
+        }
+
+        $materiaVal = !empty($r['materia']) ? trim(preg_replace('/\s+/u', ' ', (string)$r['materia'])) : 'Sin materia';
+        if ($materiaVal === '') {
+            $materiaVal = 'Sin materia';
+        }
+
         $nombreSub = !empty($r['nombre_subcontrato']) ? trim($r['nombre_subcontrato']) : 'Sin subcontrato';
 
         // 1. Clasificación por Año
@@ -609,7 +674,20 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
         if ($esSalida) $mapMes[$ymKey]['salida']++;
         $mapMes[$ymKey]['por_tipo_documento'][$tipoNombre] = ($mapMes[$ymKey]['por_tipo_documento'][$tipoNombre] ?? 0) + 1;
 
-        // 3. Clasificación por Tipo de Documento
+        // 3. Clasificación por Fecha exacta
+        if (!isset($mapFecha[$fechaExactaKey])) {
+            $mapFecha[$fechaExactaKey] = [
+                'fecha' => $fechaExactaKey,
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0
+            ];
+        }
+        $mapFecha[$fechaExactaKey]['cantidad_total']++;
+        if ($esPendiente) $mapFecha[$fechaExactaKey]['pendientes']++;
+        if ($esCerrado) $mapFecha[$fechaExactaKey]['cerrados']++;
+
+        // 4. Clasificación por Tipo de Documento
         if (!isset($mapTipo[$tipoNombre])) {
             $mapTipo[$tipoNombre] = [
                 'tipo_documento' => $tipoNombre,
@@ -626,20 +704,88 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
         if ($esEntrada) $mapTipo[$tipoNombre]['entrada']++;
         if ($esSalida) $mapTipo[$tipoNombre]['salida']++;
 
-        // 4. Clasificación por Responsable
+        // 5. Clasificación por Responsable
         if (!isset($mapResp[$nombreResp])) {
             $mapResp[$nombreResp] = [
                 'responsable' => $nombreResp,
                 'cantidad_total' => 0,
                 'pendientes' => 0,
-                'cerrados' => 0
+                'cerrados' => 0,
+                'entrada' => 0,
+                'salida' => 0
             ];
         }
         $mapResp[$nombreResp]['cantidad_total']++;
         if ($esPendiente) $mapResp[$nombreResp]['pendientes']++;
         if ($esCerrado) $mapResp[$nombreResp]['cerrados']++;
+        if ($esEntrada) $mapResp[$nombreResp]['entrada']++;
+        if ($esSalida) $mapResp[$nombreResp]['salida']++;
 
-        // 5. Clasificación por Subcontrato
+        // 6. Clasificación por Remitente
+        if (!isset($mapRemitente[$etiquetaRem])) {
+            $mapRemitente[$etiquetaRem] = [
+                'remitente' => $etiquetaRem,
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0,
+                'entrada' => 0,
+                'salida' => 0
+            ];
+        }
+        $mapRemitente[$etiquetaRem]['cantidad_total']++;
+        if ($esPendiente) $mapRemitente[$etiquetaRem]['pendientes']++;
+        if ($esCerrado) $mapRemitente[$etiquetaRem]['cerrados']++;
+        if ($esEntrada) $mapRemitente[$etiquetaRem]['entrada']++;
+        if ($esSalida) $mapRemitente[$etiquetaRem]['salida']++;
+
+        // 7. Clasificación por Destinatario
+        if (!isset($mapDestinatario[$etiquetaDest])) {
+            $mapDestinatario[$etiquetaDest] = [
+                'destinatario' => $etiquetaDest,
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0,
+                'entrada' => 0,
+                'salida' => 0
+            ];
+        }
+        $mapDestinatario[$etiquetaDest]['cantidad_total']++;
+        if ($esPendiente) $mapDestinatario[$etiquetaDest]['pendientes']++;
+        if ($esCerrado) $mapDestinatario[$etiquetaDest]['cerrados']++;
+        if ($esEntrada) $mapDestinatario[$etiquetaDest]['entrada']++;
+        if ($esSalida) $mapDestinatario[$etiquetaDest]['salida']++;
+
+        // 8. Clasificación por Número / Código de Proceso
+        if (!isset($mapProceso[$numProcesoVal])) {
+            $mapProceso[$numProcesoVal] = [
+                'num_proceso' => $numProcesoVal,
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0,
+                'entrada' => 0,
+                'salida' => 0
+            ];
+        }
+        $mapProceso[$numProcesoVal]['cantidad_total']++;
+        if ($esPendiente) $mapProceso[$numProcesoVal]['pendientes']++;
+        if ($esCerrado) $mapProceso[$numProcesoVal]['cerrados']++;
+        if ($esEntrada) $mapProceso[$numProcesoVal]['entrada']++;
+        if ($esSalida) $mapProceso[$numProcesoVal]['salida']++;
+
+        // 9. Clasificación por Materia
+        if (!isset($mapMateria[$materiaVal])) {
+            $mapMateria[$materiaVal] = [
+                'materia' => $materiaVal,
+                'cantidad_total' => 0,
+                'pendientes' => 0,
+                'cerrados' => 0
+            ];
+        }
+        $mapMateria[$materiaVal]['cantidad_total']++;
+        if ($esPendiente) $mapMateria[$materiaVal]['pendientes']++;
+        if ($esCerrado) $mapMateria[$materiaVal]['cerrados']++;
+
+        // 10. Clasificación por Subcontrato
         if (!isset($mapSub[$nombreSub])) {
             $mapSub[$nombreSub] = [
                 'subcontrato' => $nombreSub,
@@ -665,12 +811,32 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
     }
     $porMes = array_values($mapMes);
 
-    // Ordenar por cantidad descendente en tipo, responsable y subcontrato
+    // Ordenar por cantidad descendente en todas las dimensiones de atributos
     $porTipo = array_values($mapTipo);
     usort($porTipo, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
 
     $porResponsable = array_values($mapResp);
     usort($porResponsable, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
+
+    $porRemitente = array_values($mapRemitente);
+    usort($porRemitente, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
+    $porRemitente = array_slice($porRemitente, 0, 30);
+
+    $porDestinatario = array_values($mapDestinatario);
+    usort($porDestinatario, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
+    $porDestinatario = array_slice($porDestinatario, 0, 30);
+
+    $porProceso = array_values($mapProceso);
+    usort($porProceso, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
+    $porProceso = array_slice($porProceso, 0, 40);
+
+    $porMateria = array_values($mapMateria);
+    usort($porMateria, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
+    $porMateria = array_slice($porMateria, 0, 25);
+
+    $porFecha = array_values($mapFecha);
+    usort($porFecha, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
+    $porFecha = array_slice($porFecha, 0, 30);
 
     $porSubcontrato = array_values($mapSub);
     usort($porSubcontrato, function($a, $b) { return $b['cantidad_total'] <=> $a['cantidad_total']; });
@@ -678,6 +844,20 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
     return [
         'total_historico_documentos' => $totalHistorico,
         'clasificacion_principal_solicitada' => $filters['clasificar_por'] ?? 'general',
+        'filtros_aplicados_en_conteo' => array_filter([
+            'tipo_documento' => $filters['tipo_documento'] ?? null,
+            'materia' => $filters['materia'] ?? null,
+            'remitente' => $filters['remitente'] ?? null,
+            'destinatario' => $filters['destinatario'] ?? null,
+            'responsable' => $filters['responsable'] ?? null,
+            'num_proceso' => $filters['num_proceso'] ?? null,
+            'num_providencia' => $filters['num_providencia'] ?? null,
+            'doc_numero' => $filters['doc_numero'] ?? null,
+            'anio' => $anioFiltro,
+            'mes' => !empty($filters['mes']) ? ($nombresMeses[(int)$filters['mes']] ?? $filters['mes']) : null,
+            'fecha_desde' => $filters['fecha_desde'] ?? null,
+            'fecha_hasta' => $filters['fecha_hasta'] ?? null
+        ]),
         'anio_filtrado' => $anioFiltro,
         'mes_filtrado' => !empty($filters['mes']) ? ($nombresMeses[(int)$filters['mes']] ?? $filters['mes']) : null,
         'desglose_por_estado' => [
@@ -694,8 +874,13 @@ function contarDocumentosHistoricosPorVariables($cnx, $userContractId, $userId, 
         ],
         'desglose_por_mes' => $porMes,
         'desglose_por_anio' => $porAnio,
+        'desglose_por_fecha_documento' => $porFecha,
         'desglose_por_tipo_documento' => $porTipo,
         'desglose_por_responsable' => $porResponsable,
+        'desglose_por_remitente' => $porRemitente,
+        'desglose_por_destinatario' => $porDestinatario,
+        'desglose_por_num_proceso' => $porProceso,
+        'desglose_por_materia' => $porMateria,
         'desglose_por_subcontrato' => $porSubcontrato
     ];
 }
@@ -1237,6 +1422,15 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
         return $rawRows;
     }
 
+    // Si se buscó por un número de documento específico (ej. "carta SCINC/IF/1140/2026" o "1140/2026")
+    // y no hubo coincidencias por restricción de tipo_documento o año, reintentamos flexibilizando tipo_documento y anio
+    if (empty($rawRows) && !empty($filters['doc_numero']) && (!empty($filters['tipo_documento']) || !empty($filters['anio']))) {
+        $filtersFlex = $filters;
+        $filtersFlex['tipo_documento'] = null;
+        $filtersFlex['anio'] = null;
+        return buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filtersFlex, [], $customVars, $usuariosContrato);
+    }
+
     $docs = [];
     $seenIds = [];
     foreach ($rawRows as $r) {
@@ -1244,12 +1438,299 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
         if (!isset($seenIds[$idDoc])) {
             $seenIds[$idDoc] = true;
             $docs[] = formatearFilaDocumento($r);
-            if (count($docs) >= $limiteSolicitado) {
-                break;
-            }
         }
     }
-    return $docs;
+
+    // Si se buscó por doc_numero, priorizar coincidencias exactas o más específicas primero
+    if (!empty($filters['doc_numero']) && count($docs) > 1) {
+        $needleNorm = mb_strtolower(trim((string)$filters['doc_numero']), 'UTF-8');
+        usort($docs, function ($a, $b) use ($needleNorm) {
+            $numA = mb_strtolower(trim((string)($a['num_documento'] ?? '')), 'UTF-8');
+            $numB = mb_strtolower(trim((string)($b['num_documento'] ?? '')), 'UTF-8');
+            $scoreA = ($numA === $needleNorm) ? 3 : ((substr($numA, -strlen($needleNorm)) === $needleNorm) ? 2 : (strpos($numA, $needleNorm) !== false ? 1 : 0));
+            $scoreB = ($numB === $needleNorm) ? 3 : ((substr($numB, -strlen($needleNorm)) === $needleNorm) ? 2 : (strpos($numB, $needleNorm) !== false ? 1 : 0));
+            return $scoreB <=> $scoreA;
+        });
+    }
+
+    return array_slice($docs, 0, $limiteSolicitado);
+}
+
+/**
+ * Consulta los documentos relacionados (Seguimiento y tabla documento_relacionado) de un documento
+ * específico del contrato (por ejemplo, "SCINC/IF/1140/2026" o "1140/2026"), determinando:
+ * 1. Si tiene documentos relacionados.
+ * 2. Cuántos documentos relacionados tiene (tanto registros totales en seguimiento como documentos únicos).
+ * 3. Si tiene documentos relacionados duplicados (mismo id_documento insertado varias veces en seguimiento
+ *    o distintos id_documento con el mismo num_documento) y cuáles son.
+ */
+function consultarDocumentosRelacionados($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = []) {
+    $filtersBase = $filters;
+    $filtersBase['limite'] = 10;
+    // Al buscar un documento puntual por código/número, no filtrar por estado ni por año de fecha_documento
+    if (!empty($filtersBase['doc_numero'])) {
+        $filtersBase['estado_doc'] = null;
+        $filtersBase['anio'] = null;
+        $filtersBase['mes'] = null;
+    }
+
+    $docsEncontrados = buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filtersBase, $keywords, $customVars, $usuariosContrato);
+    if (isset($docsEncontrados['error'])) {
+        return ['error' => $docsEncontrados['error']];
+    }
+
+    if (empty($docsEncontrados)) {
+        return [
+            'documento_encontrado' => false,
+            'criterio_buscado' => $filters['doc_numero'] ?? ($filters['doc_nombre'] ?? ($filters['materia'] ?? '')),
+            'analisis_por_documento' => []
+        ];
+    }
+
+    $selectCamposDoc = "d.id_documento, d.nombre_documento, d.fecha_documento, d.fecha_recepcion, d.fecha_plazo,
+                   CASE WHEN d.id_estado_doc = 2 THEN COALESCE(NULLIF((SELECT MAX(b.fecha_emision) FROM bitacora b WHERE b.id_documento = d.id_documento), '0000-00-00'), NULLIF(d.fecha_documento, '0000-00-00'), NULLIF(d.fecha_recepcion, '0000-00-00')) ELSE NULL END AS fecha_cierre,
+                   CASE WHEN d.id_estado_doc = 1 THEN 'Pendiente' WHEN d.id_estado_doc = 2 THEN 'Cerrado' ELSE 'Otro' END AS estado_documento,
+                   CASE WHEN d.id_flujo = 1 THEN 'Entrada' WHEN d.id_flujo = 2 THEN 'Salida' ELSE 'Otro' END AS flujo_documento,
+                   dd.num_documento, dd.num_providencia, dd.num_proceso, dd.materia, dd.antecedente, dd.incluye, dd.comentario,
+                   td.tipo_documento,
+                   dd.id_responsable,
+                   u.nombre AS resp_nombre, u.apellido_p AS resp_apellido_p, u.apellido_m AS resp_apellido_m,
+                   u.correo AS correo_responsable,
+                   dd.id_remitente,
+                   rem.nombre_entidad AS rem_nombre, rem.apellido_entidad AS rem_apellido,
+                   crem.cargo AS cargo_remitente,
+                   dd.id_destinatario,
+                   dest.nombre_entidad AS dest_nombre, dest.apellido_entidad AS dest_apellido,
+                   cdest.cargo AS cargo_destinatario,
+                   sc.nombre_subcontrato,
+                   c.nombre_contrato AS contrato_sub,
+                   cu.nombre_contrato AS contrato_usr";
+
+    $joinsDoc = "INNER JOIN documento d ON s.id_documento = d.id_documento
+                 INNER JOIN detalle_documento dd ON d.id_documento = dd.id_documento
+                 LEFT JOIN subcontrato sc ON d.id_subcontrato = sc.id_subcontrato
+                 LEFT JOIN contrato c ON sc.id_contrato = c.id_contrato
+                 LEFT JOIN usuario u ON dd.id_responsable = u.id_usuario
+                 LEFT JOIN contrato cu ON u.id_contrato = cu.id_contrato
+                 LEFT JOIN tipo_documento td ON dd.id_tipo_doc = td.id_tipo_doc
+                 LEFT JOIN entidad rem ON dd.id_remitente = rem.id_entidad
+                 LEFT JOIN cargo crem ON rem.id_cargo = crem.id_cargo
+                 LEFT JOIN entidad dest ON dd.id_destinatario = dest.id_entidad
+                 LEFT JOIN cargo cdest ON dest.id_cargo = cdest.id_cargo";
+
+    $analisisResultados = [];
+
+    foreach (array_slice($docsEncontrados, 0, 5) as $docBase) {
+        $idDocBase = (int)$docBase['id_documento'];
+        $numDocBaseNorm = mb_strtolower(preg_replace('/\s+/u', '', trim((string)($docBase['num_documento'] ?? ''))), 'UTF-8');
+
+        // 1. Obtener los números de seguimiento asociados al documento base en la tabla `seguimiento`
+        $rowsNumSeg = ejecutarSelect(
+            $cnx,
+            "SELECT id_seguimiento, id_documento, numero_seguimiento
+             FROM seguimiento
+             WHERE id_documento = ? AND numero_seguimiento <> 0
+             ORDER BY id_seguimiento ASC",
+            [$idDocBase],
+            "i"
+        );
+
+        $numerosSeguimiento = [];
+        if (is_array($rowsNumSeg) && !isset($rowsNumSeg['error'])) {
+            foreach ($rowsNumSeg as $rns) {
+                $numSeg = (int)$rns['numero_seguimiento'];
+                if ($numSeg > 0 && !in_array($numSeg, $numerosSeguimiento, true)) {
+                    $numerosSeguimiento[] = $numSeg;
+                }
+            }
+        }
+
+        // 2. Obtener todas las filas de `seguimiento` que comparten esos `numero_seguimiento`
+        $filasSeguimiento = [];
+        $seenIdSeguimiento = [];
+        if (!empty($numerosSeguimiento)) {
+            $phSeg = implode(',', array_fill(0, count($numerosSeguimiento), '?'));
+            $typesSeg = str_repeat('i', count($numerosSeguimiento));
+            $sqlSeg = "SELECT s.id_seguimiento, s.numero_seguimiento, {$selectCamposDoc}
+                       FROM seguimiento s
+                       {$joinsDoc}
+                       WHERE s.numero_seguimiento IN ({$phSeg}) AND s.numero_seguimiento <> 0
+                       ORDER BY d.fecha_recepcion ASC, s.id_seguimiento ASC";
+            $resSeg = ejecutarSelect($cnx, $sqlSeg, $numerosSeguimiento, $typesSeg);
+            if (is_array($resSeg) && !isset($resSeg['error'])) {
+                foreach ($resSeg as $rs) {
+                    $idSeg = (int)$rs['id_seguimiento'];
+                    // Deduplicar por id_seguimiento por si detalle_documento tiene más de una fila de corresponsable
+                    if (!isset($seenIdSeguimiento[$idSeg])) {
+                        $seenIdSeguimiento[$idSeg] = true;
+                        $docFmt = formatearFilaDocumento($rs);
+                        $docFmt['id_seguimiento'] = $idSeg;
+                        $docFmt['numero_seguimiento'] = (int)$rs['numero_seguimiento'];
+                        $docFmt['origen_relacion'] = 'seguimiento';
+                        $filasSeguimiento[] = $docFmt;
+                    }
+                }
+            }
+        }
+
+        // 3. Consultar también la tabla `documento_relacionado` por si existen relaciones directas registradas ahí
+        $sqlDocRel = "SELECT dr.id_documento AS id_padre_rel, dr.id_documento_rel AS id_hijo_rel,
+                             CASE WHEN dr.id_documento = ? THEN dr.id_documento_rel ELSE dr.id_documento END AS id_doc_vinculado
+                      FROM documento_relacionado dr
+                      WHERE dr.id_documento = ? OR dr.id_documento_rel = ?";
+        $resDocRelIds = ejecutarSelect($cnx, $sqlDocRel, [$idDocBase, $idDocBase, $idDocBase], "iii");
+        if (is_array($resDocRelIds) && !isset($resDocRelIds['error']) && !empty($resDocRelIds)) {
+            foreach ($resDocRelIds as $drRow) {
+                $idVinc = (int)$drRow['id_doc_vinculado'];
+                if ($idVinc <= 0) {
+                    continue;
+                }
+                $sqlDetalleVinc = "SELECT 0 AS id_seguimiento, 0 AS numero_seguimiento, {$selectCamposDoc}
+                                   FROM (SELECT ? AS id_documento) s
+                                   {$joinsDoc}
+                                   LIMIT 1";
+                $resVinc = ejecutarSelect($cnx, $sqlDetalleVinc, [$idVinc], "i");
+                if (is_array($resVinc) && !isset($resVinc['error']) && !empty($resVinc)) {
+                    $docFmt = formatearFilaDocumento($resVinc[0]);
+                    $docFmt['id_seguimiento'] = null;
+                    $docFmt['numero_seguimiento'] = null;
+                    $docFmt['origen_relacion'] = 'documento_relacionado';
+                    $filasSeguimiento[] = $docFmt;
+                }
+            }
+        }
+
+        // 4. Separar las filas del propio documento consultado vs los otros documentos relacionados
+        $aparicionesPropioDoc = [];
+        $filasOtrosDocumentos = [];
+        foreach ($filasSeguimiento as $fila) {
+            if ((int)$fila['id_documento'] === $idDocBase) {
+                $aparicionesPropioDoc[] = $fila;
+            } else {
+                $filasOtrosDocumentos[] = $fila;
+            }
+        }
+
+        // Agrupar otros documentos relacionados por id_documento y por num_documento normalizado para detectar duplicados
+        $conteoPorIdDoc = [];
+        $conteoPorNumDoc = [];
+        foreach ($filasOtrosDocumentos as $f) {
+            $idD = (int)$f['id_documento'];
+            $numDNorm = mb_strtolower(preg_replace('/\s+/u', '', trim((string)($f['num_documento'] ?? ''))), 'UTF-8');
+            $conteoPorIdDoc[$idD][] = $f;
+            if ($numDNorm !== '' && $numDNorm !== 'noregistra') {
+                $conteoPorNumDoc[$numDNorm][] = $f;
+            }
+        }
+
+        $duplicadosDetectados = [];
+        $idsYaReportadosEnDuplicados = [];
+
+        // Caso A: Mismo id_documento relacionado 2 o más veces en seguimiento
+        foreach ($conteoPorIdDoc as $idD => $ocurrencias) {
+            if (count($ocurrencias) > 1) {
+                $primero = $ocurrencias[0];
+                $idsSeg = array_values(array_filter(array_map(function ($x) { return $x['id_seguimiento']; }, $ocurrencias)));
+                $duplicadosDetectados[] = [
+                    'tipo_duplicado' => 'Mismo documento vinculado múltiples veces en el seguimiento',
+                    'id_documento' => $idD,
+                    'ids_documento_involucrados' => [$idD],
+                    'ids_seguimiento' => $idsSeg,
+                    'tipo_documento' => $primero['tipo_documento'],
+                    'num_documento' => $primero['num_documento'],
+                    'num_providencia' => $primero['num_providencia'],
+                    'materia' => $primero['materia'],
+                    'fecha_documento' => $primero['fecha_documento'],
+                    'fecha_recepcion' => $primero['fecha_recepcion'],
+                    'estado_documento' => $primero['estado_documento'],
+                    'responsable' => $primero['responsable'],
+                    'veces_repetido' => count($ocurrencias)
+                ];
+                $idsYaReportadosEnDuplicados[$idD] = true;
+            }
+        }
+
+        // Caso B: Distintos id_documento pero con el mismo num_documento
+        foreach ($conteoPorNumDoc as $numNorm => $ocurrencias) {
+            $idsDistintos = array_values(array_unique(array_map(function ($x) { return (int)$x['id_documento']; }, $ocurrencias)));
+            if (count($idsDistintos) > 1) {
+                $primero = $ocurrencias[0];
+                $idsSeg = array_values(array_filter(array_map(function ($x) { return $x['id_seguimiento']; }, $ocurrencias)));
+                $duplicadosDetectados[] = [
+                    'tipo_duplicado' => 'Múltiples registros de documento con el mismo N° de Documento en el seguimiento',
+                    'id_documento' => (int)$primero['id_documento'],
+                    'ids_documento_involucrados' => $idsDistintos,
+                    'ids_seguimiento' => $idsSeg,
+                    'tipo_documento' => $primero['tipo_documento'],
+                    'num_documento' => $primero['num_documento'],
+                    'num_providencia' => $primero['num_providencia'],
+                    'materia' => $primero['materia'],
+                    'fecha_documento' => $primero['fecha_documento'],
+                    'fecha_recepcion' => $primero['fecha_recepcion'],
+                    'estado_documento' => $primero['estado_documento'],
+                    'responsable' => $primero['responsable'],
+                    'veces_repetido' => count($ocurrencias)
+                ];
+                foreach ($idsDistintos as $idD) {
+                    $idsYaReportadosEnDuplicados[$idD] = true;
+                }
+            }
+        }
+
+        // Caso C: El propio documento consultado está insertado 2 o más veces en su tabla de seguimiento
+        if (count($aparicionesPropioDoc) > 1) {
+            $idsSegPropio = array_values(array_filter(array_map(function ($x) { return $x['id_seguimiento']; }, $aparicionesPropioDoc)));
+            $duplicadosDetectados[] = [
+                'tipo_duplicado' => 'El propio documento consultado aparece repetido múltiples veces en su tabla de seguimiento',
+                'id_documento' => $idDocBase,
+                'ids_documento_involucrados' => [$idDocBase],
+                'ids_seguimiento' => $idsSegPropio,
+                'tipo_documento' => $docBase['tipo_documento'],
+                'num_documento' => $docBase['num_documento'],
+                'num_providencia' => $docBase['num_providencia'],
+                'materia' => $docBase['materia'],
+                'fecha_documento' => $docBase['fecha_documento'],
+                'fecha_recepcion' => $docBase['fecha_recepcion'],
+                'estado_documento' => $docBase['estado_documento'],
+                'responsable' => $docBase['responsable'],
+                'veces_repetido' => count($aparicionesPropioDoc)
+            ];
+        }
+
+        // Construir lista única de otros documentos relacionados indicando cuántas veces aparece cada uno
+        $documentosRelacionadosUnicos = [];
+        foreach ($conteoPorIdDoc as $idD => $ocurrencias) {
+            $docItem = $ocurrencias[0];
+            $docItem['veces_en_seguimiento'] = count($ocurrencias);
+            $docItem['ids_seguimiento'] = array_values(array_filter(array_map(function ($x) { return $x['id_seguimiento']; }, $ocurrencias)));
+            $docItem['es_duplicado'] = isset($idsYaReportadosEnDuplicados[$idD]);
+            $documentosRelacionadosUnicos[] = $docItem;
+        }
+
+        $totalFilasOtros = count($filasOtrosDocumentos);
+        $totalUnicosOtros = count($documentosRelacionadosUnicos);
+        $totalFilasTablaSeguimiento = count($filasSeguimiento);
+
+        $analisisResultados[] = [
+            'documento_consultado' => $docBase,
+            'numeros_seguimiento' => $numerosSeguimiento,
+            'tiene_documentos_relacionados' => ($totalFilasOtros > 0),
+            'cantidad_documentos_relacionados_unicos' => $totalUnicosOtros,
+            'cantidad_registros_documentos_relacionados' => $totalFilasOtros,
+            'total_filas_tabla_seguimiento_incluyendo_documento_base' => $totalFilasTablaSeguimiento,
+            'apariciones_documento_base_en_seguimiento' => count($aparicionesPropioDoc),
+            'tiene_documentos_relacionados_duplicados' => !empty($duplicadosDetectados),
+            'cantidad_grupos_duplicados' => count($duplicadosDetectados),
+            'duplicados_detectados' => $duplicadosDetectados,
+            'documentos_relacionados' => $documentosRelacionadosUnicos
+        ];
+    }
+
+    return [
+        'documento_encontrado' => true,
+        'total_documentos_base_coincidentes' => count($analisisResultados),
+        'analisis_por_documento' => $analisisResultados
+    ];
 }
 
 // Validar en BD la información actualizada del usuario que tiene el login y su contrato asignado
@@ -1383,7 +1864,16 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25) {
 
         $resObj = json_decode($response, true);
         if (isset($resObj['candidates'][0]['content']['parts'][0]['text'])) {
-            return ['text' => $resObj['candidates'][0]['content']['parts'][0]['text'], 'model_used' => $model];
+            $usage = $resObj['usageMetadata'] ?? [];
+            return [
+                'text' => $resObj['candidates'][0]['content']['parts'][0]['text'],
+                'model_used' => $model,
+                'usage' => [
+                    'prompt_tokens'     => (int)($usage['promptTokenCount'] ?? 0),
+                    'completion_tokens' => (int)($usage['candidatesTokenCount'] ?? 0),
+                    'total_tokens'      => (int)($usage['totalTokenCount'] ?? 0)
+                ]
+            ];
         }
         $lastError = 'Respuesta no válida de Gemini. API Response: ' . $response;
     }
@@ -1392,10 +1882,86 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25) {
 }
 
 /**
+ * Registra en la tabla `log_consumo_ia` los tokens, créditos y costo estimado de la consulta.
+ * Conversión de referencia:
+ * - 1 Crédito = 1.000 tokens totales
+ * - Tarifa referencia Gemini Flash: $0.10 USD / 1M tokens entrada, $0.40 USD / 1M tokens salida
+ */
+function registrarConsumoIA($cnx, $idContrato, $idUsuario, $modelo, $intent, $tokensEntrada, $tokensSalida, $tokensTotales, $query) {
+    $creditos = round($tokensTotales / 1000, 4);
+    $costoUsd = round((($tokensEntrada / 1000000) * 0.10) + (($tokensSalida / 1000000) * 0.40), 6);
+
+    $sql = "INSERT INTO log_consumo_ia 
+            (id_contrato, id_usuario, fecha_hora, modelo_usado, intent_detectado, tokens_entrada, tokens_salida, tokens_totales, creditos_consumidos, costo_estimado_usd, consulta_usuario)
+            VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?)";
+
+    $stmt = mysqli_prepare($cnx, $sql);
+    if ($stmt) {
+        mysqli_stmt_bind_param(
+            $stmt,
+            "iissiiidds",
+            $idContrato,
+            $idUsuario,
+            $modelo,
+            $intent,
+            $tokensEntrada,
+            $tokensSalida,
+            $tokensTotales,
+            $creditos,
+            $costoUsd,
+            $query
+        );
+        @mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+    }
+}
+
+/**
  * Formatea una respuesta clara en Markdown directamente en PHP si la API externa de IA
  * llegara a presentar intermitencia o timeout en el Paso 2.
  */
-function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters = []) {
+function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters = [], $esConsultaRelacionados = false) {
+    if ($esConsultaRelacionados && isset($dbResults['analisis_documentos_relacionados'])) {
+        $rel = $dbResults['analisis_documentos_relacionados'];
+        if (empty($rel['documento_encontrado']) || empty($rel['analisis_por_documento'])) {
+            $crit = $rel['criterio_buscado'] ?: ($filters['doc_numero'] ?? 'indicado');
+            return "No se encontró ningún documento con el número o código **{$crit}** dentro del contrato **{$userContractName}**.";
+        }
+        $md = "### Análisis de Documentos Relacionados — Contrato **{$userContractName}**\n\n";
+        foreach ($rel['analisis_por_documento'] as $item) {
+            $doc = $item['documento_consultado'];
+            $tieneRel = !empty($item['tiene_documentos_relacionados']);
+            $cantUnicos = (int)($item['cantidad_documentos_relacionados_unicos'] ?? 0);
+            $cantRegistros = (int)($item['cantidad_registros_documentos_relacionados'] ?? 0);
+            $tieneDup = !empty($item['tiene_documentos_relacionados_duplicados']);
+
+            $md .= "#### Documento consultado: **{$doc['tipo_documento']} N° {$doc['num_documento']}** (ID: {$doc['id_documento']})\n";
+            $md .= "- **Materia:** {$doc['materia']}\n";
+            $md .= "- **Estado:** {$doc['estado_documento']} | **Fecha Documento:** {$doc['fecha_documento']} | **Responsable:** {$doc['responsable']}\n";
+            $md .= "- **¿Tiene documentos relacionados?:** **" . ($tieneRel ? "Sí" : "No") . "**\n";
+            $md .= "- **Cantidad de documentos relacionados:** **{$cantUnicos} documento(s) único(s)** ({$cantRegistros} registro(s) vinculado(s) en seguimiento)\n";
+            $md .= "- **¿Tiene documentos relacionados duplicados?:** **" . ($tieneDup ? "Sí (" . count($item['duplicados_detectados']) . " duplicado(s) detectado(s))" : "No tiene duplicados") . "**\n";
+
+            if ($tieneDup && !empty($item['duplicados_detectados'])) {
+                $md .= "\n**Detalle de duplicados detectados:**\n";
+                foreach ($item['duplicados_detectados'] as $dup) {
+                    $md .= "- **{$dup['tipo_documento']} N° {$dup['num_documento']}** — Materia: *{$dup['materia']}* | Repetido **{$dup['veces_repetido']} veces** ({$dup['tipo_duplicado']})\n";
+                }
+            }
+
+            if (!empty($item['documentos_relacionados'])) {
+                $md .= "\n**Listado de documentos relacionados:**\n";
+                foreach ($item['documentos_relacionados'] as $idx => $dr) {
+                    $n = $idx + 1;
+                    $badgeDup = !empty($dr['es_duplicado']) ? " *(Duplicado: aparece {$dr['veces_en_seguimiento']} veces)*" : "";
+                    $md .= "{$n}. **{$dr['tipo_documento']} N° {$dr['num_documento']}**{$badgeDup} — Materia: {$dr['materia']} | Fecha: {$dr['fecha_documento']} | Estado: {$dr['estado_documento']} | [Descargar Documento](negocio/descargarDocumento.php?idDocumento={$dr['id_documento']})\n";
+                }
+            }
+            $md .= "\n";
+        }
+        return $md;
+    }
+
     if ($esConsultaTiempos && isset($dbResults['metricas_tiempos_fechas_documentos'])) {
         $m = $dbResults['metricas_tiempos_fechas_documentos'];
         $g = $m['resumen_general_tiempos'] ?? [];
@@ -1438,10 +2004,40 @@ function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsul
 
     if ($esConsultaCantidad && isset($dbResults['estadisticas_historicas_documentos'])) {
         $e = $dbResults['estadisticas_historicas_documentos'];
-        $md = "### Estadísticas de Documentos — Contrato **{$userContractName}**\n\n";
-        $md .= "- **Total de documentos:** **" . ($e['total_historico_documentos'] ?? 0) . "**\n";
-        $md .= "- **Pendientes:** " . ($e['desglose_por_estado']['Pendientes'] ?? 0) . " | **Cerrados:** " . ($e['desglose_por_estado']['Cerrados'] ?? 0) . "\n";
-        $md .= "- **Entrada:** " . ($e['desglose_por_flujo']['Entrada'] ?? 0) . " | **Salida:** " . ($e['desglose_por_flujo']['Salida'] ?? 0) . "\n";
+        $md = "### Estadísticas y Clasificación de Documentos — Contrato **{$userContractName}**\n\n";
+        if (!empty($e['filtros_aplicados_en_conteo'])) {
+            $partesFiltro = [];
+            foreach ($e['filtros_aplicados_en_conteo'] as $k => $v) {
+                if ($v !== null && $v !== '') {
+                    $partesFiltro[] = "`{$k}`: **{$v}**";
+                }
+            }
+            if (!empty($partesFiltro)) {
+                $md .= "- **Filtros aplicados:** " . implode(' | ', $partesFiltro) . "\n";
+            }
+        }
+        $md .= "- **Total de documentos que cumplen los criterios:** **" . ($e['total_historico_documentos'] ?? 0) . "**\n";
+        $md .= "- **Estado:** Pendientes: **" . ($e['desglose_por_estado']['Pendientes'] ?? 0) . "** | Cerrados: **" . ($e['desglose_por_estado']['Cerrados'] ?? 0) . "**\n";
+        $md .= "- **Flujo:** Entrada: **" . ($e['desglose_por_flujo']['Entrada'] ?? 0) . "** | Salida: **" . ($e['desglose_por_flujo']['Salida'] ?? 0) . "**\n";
+
+        $seccionesDesglose = [
+            'desglose_por_tipo_documento' => ['titulo' => 'Clasificación por Tipo de Documento', 'campo' => 'tipo_documento'],
+            'desglose_por_num_proceso'    => ['titulo' => 'Clasificación por Número/Código de Proceso', 'campo' => 'num_proceso'],
+            'desglose_por_responsable'    => ['titulo' => 'Clasificación por Responsable', 'campo' => 'responsable'],
+            'desglose_por_remitente'      => ['titulo' => 'Clasificación por Remitente', 'campo' => 'remitente'],
+            'desglose_por_destinatario'   => ['titulo' => 'Clasificación por Destinatario', 'campo' => 'destinatario'],
+            'desglose_por_materia'        => ['titulo' => 'Clasificación por Materia / Asunto (Top)', 'campo' => 'materia'],
+            'desglose_por_anio'           => ['titulo' => 'Clasificación por Año', 'campo' => 'anio'],
+        ];
+        foreach ($seccionesDesglose as $keyDesglose => $meta) {
+            if (!empty($e[$keyDesglose])) {
+                $md .= "\n#### {$meta['titulo']}\n";
+                foreach (array_slice($e[$keyDesglose], 0, 10) as $row) {
+                    $label = $row[$meta['campo']] ?? 'Sin especificar';
+                    $md .= "- **{$label}**: **{$row['total']}** docs (Pendientes: {$row['pendientes']}, Cerrados: {$row['cerrados']}, Entrada: {$row['entrada']}, Salida: {$row['salida']})\n";
+                }
+            }
+        }
         return $md;
     }
 
@@ -1466,6 +2062,55 @@ $anioActual = date('Y');
 $listaRespTexto = implode(', ', $nombresResponsablesContrato);
 $queryLower = mb_strtolower($query, 'UTF-8');
 
+// Detectar de forma determinista en PHP si el usuario consulta por documentos relacionados, seguimiento o duplicados en documentos relacionados
+$esConsultaRelacionadosPre = (bool)preg_match(
+    '/\b(documentos?\s+relacionad[oa]s?|relacionad[oa]s?\s+(?:con|a|de|al|tiene|duplicad[oa]s?)|tiene\s+(?:documentos?\s+)?relacionad[oa]s?|duplicad[oa]s?\s+(?:en\s+)?(?:el\s+)?(?:seguimiento|relacionad[oa]s?)|seguimiento\s+(?:de|del|para)\s+(?:la\s+|el\s+)?(?:carta|oficio|informe|documento|memor[aá]ndum|resoluci[oó]n))\b/iu',
+    $query
+);
+
+// Extraer de forma determinista en PHP número/código de proceso (ej. "4.2.0.0", "código de proceso 4.2.0.0", "número de proceso X")
+$numProcesoExplicitoDetectado = null;
+if (preg_match('/\b(?:n[uú]mero|nro\.?|n[°ºo]|c[oó]digo)?\s*(?:de\s+|del\s+)?proceso\s*(?:n[°ºo]|nro\.?|es|=|:)?\s*([A-Z0-9_.\-\/]{2,30})\b/iu', $query, $mProcWord)) {
+    $candProc = trim($mProcWord[1], ".,;:?¿!¡\"'()[]");
+    if (!in_array(mb_strtolower($candProc, 'UTF-8'), ['por', 'del', 'de', 'el', 'la', 'los', 'las', 'que', 'en', 'con', 'para'], true)) {
+        $numProcesoExplicitoDetectado = $candProc;
+    }
+} elseif (preg_match('/\b(\d+(?:\.\d+){2,6})\b/u', $query, $mProcDots)) {
+    $numProcesoExplicitoDetectado = trim($mProcDots[1]);
+}
+
+// Extraer de forma determinista en PHP códigos/números de documento como "SCINC/IF/1140/2026" o "1140/2026"
+$docNumeroExplicitoDetectado = null;
+if (preg_match('/\b([A-Z0-9_.\-]{1,30}(?:\/[A-Z0-9_.\-]{1,30})+)\b/iu', $query, $mCodeSlash)) {
+    // Evitar confundir una fecha completa DD/MM/YYYY con un número de documento
+    if (!preg_match('/^\d{1,2}\/\d{1,2}\/\d{2,4}$/', $mCodeSlash[1])) {
+        $docNumeroExplicitoDetectado = trim($mCodeSlash[1]);
+    }
+} elseif ($numProcesoExplicitoDetectado === null && preg_match('/\b(?:carta|oficio|informe|documento|providencia|memor[aá]ndum|resoluci[oó]n|n[°ºo]|nro\.?|n[uú]mero)\s+(?:n[°ºo]\s*|nro\.?\s*)?([A-Z0-9_.\-\/]{2,40})\b/iu', $query, $mCodeWord)) {
+    $candidato = trim($mCodeWord[1], ".,;:?¿!¡\"'()[]");
+    if (preg_match('/\d/', $candidato)) {
+        $docNumeroExplicitoDetectado = $candidato;
+    }
+}
+
+// Detectar fechas explícitas escritas en la consulta (YYYY-MM-DD o DD-MM-YYYY / DD/MM/YYYY)
+$fechasExplicitasEnQuery = [];
+if (preg_match_all('/\b(\d{4})-(\d{2})-(\d{2})\b/', $query, $mIsoDates, PREG_SET_ORDER)) {
+    foreach ($mIsoDates as $md) {
+        $fechasExplicitasEnQuery[] = "{$md[1]}-{$md[2]}-{$md[3]}";
+    }
+}
+if (preg_match_all('/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](19\d{2}|20\d{2})\b/', $query, $mLatamDates, PREG_SET_ORDER)) {
+    foreach ($mLatamDates as $md) {
+        $dDia = (int)$md[1];
+        $dMes = (int)$md[2];
+        $dAnio = (int)$md[3];
+        if ($dMes >= 1 && $dMes <= 12 && $dDia >= 1 && $dDia <= 31) {
+            $fechasExplicitasEnQuery[] = sprintf('%04d-%02d-%02d', $dAnio, $dMes, $dDia);
+        }
+    }
+}
+
 // Detectar de forma determinista en PHP si el usuario consulta qué/cuántos documentos cambiaron de pendiente a cerrado (o se cerraron) en un mes/año/fecha
 $filtrarPorFechaCierrePre = (bool)preg_match(
     '/\b(cambi(?:aron|ó|o|an|ar)\s+(?:de\s+)?(?:estado\s+)?(?:de\s+)?pendientes?\s+a\s+cerrad[oa]s?|pasar(?:on)?\s+(?:de\s+)?(?:estado\s+)?(?:de\s+)?pendientes?\s+a\s+cerrad[oa]s?|pas[oó]\s+(?:de\s+)?(?:estado\s+)?pendiente\s+a\s+cerrado|se\s+cerraron|fueron\s+cerrad[oa]s?)\b/iu',
@@ -1488,42 +2133,45 @@ Dentro de este contrato existen los siguientes usuarios/responsables registrados
 La base de datos contiene estas tablas principales (restringidas al contrato del usuario logueado):
 1. `contrato` y `subcontrato`: información del contrato y subcontratos del usuario (nombre_contrato, fecha_termino, nombre_subcontrato)
 2. `usuario`: información de usuarios/responsables del contrato (nombre, apellido_p, apellido_m, correo, nombre_usuario)
-3. `documento`, `detalle_documento`, `bitacora`, `entidad` y `cargo`: información de documentos cargados en el contrato y sus variables:
+3. `documento`, `detalle_documento`, `seguimiento`, `documento_relacionado`, `bitacora`, `entidad` y `cargo`: información de documentos cargados en el contrato, sus documentos relacionados en seguimiento y sus variables:
    - `responsable`: usuario/cargo interno del contrato responsable del documento (por ejemplo: 'Jefe Asesoria', 'Encargada De Gestion', 'Jefe Area Proyectos', 'Asesor Legal', etc.)
    - `remitente`: persona/entidad o cargo que envía o emite el documento
    - `destinatario`: persona/entidad o cargo a quien va dirigido el documento
    - `tipo_documento`: tipo (Oficio, Carta, Informe, Providencia, Memorándum, Resolución, etc.)
-   - `materia`, `antecedente`, `comentario`, `num_documento`, `num_providencia`, `num_proceso`, `fecha_documento`, `fecha_recepcion`, `fecha_plazo`, `id_estado_doc`, `id_flujo`
+   - `materia`, `antecedente`, `comentario`, `num_documento`, `num_providencia`, `num_proceso` (código/número de proceso ej. '4.2.0.0'), `fecha_documento`, `fecha_recepcion`, `fecha_plazo`, `id_estado_doc`, `id_flujo`
 
 IMPORTANTE: Si el usuario menciona cargos o nombres como 'Jefe Asesoria', 'Jefe de Asesoría', 'Encargada de Gestión', 'Jefe Área Construcción', 'Asesor Legal', etc. (incluso con errores ortográficos o sin tildes), corrígelo e identifícalo como `responsable` (o `remitente`/`destinatario` según el contexto de la frase) DENTRO de su propio contrato, y NUNCA como un contrato distinto (`contrato_nombre` debe ser null).
 
 Debes retornar EXCLUSIVAMENTE un objeto JSON estructurado con las siguientes claves:
-- 'intent': Debe ser uno de: 'contract', 'user', 'document', 'general' (si se consulta, lista, cuenta o mide tiempos entre fechas de documentos por antigüedad, mes, año, tipo, estado, responsable, remitente o destinatario, el intent DEBE ser 'document').
-- 'keywords': Un array de palabras clave específicas (strings) para búsquedas generales. Si los términos ya fueron ubicados en 'filters' (como año, mes, estado, responsable, remitente, destinatario, tipo_documento, materia, etc.) o si es una consulta de conteo/clasificación, métricas de tiempos o de 'últimos documentos' / 'documentos más antiguos', DEJA EL ARRAY VACÍO [].
+- 'intent': Debe ser uno de: 'contract', 'user', 'document', 'general' (si se consulta, lista, cuenta, verifica documentos relacionados/duplicados o mide tiempos entre fechas de documentos, el intent DEBE ser 'document').
+- 'keywords': Un array de palabras clave específicas (strings) para búsquedas generales. Si los términos ya fueron ubicados en 'filters' (como num_proceso, doc_numero, año, mes, estado, responsable, remitente, destinatario, tipo_documento, materia, etc.) o si es una consulta de documentos relacionados, conteo/clasificación, métricas de tiempos o de 'últimos documentos' / 'documentos más antiguos', DEJA EL ARRAY VACÍO [].
 - 'filters': Un objeto con las variables extraídas de la consulta (corrigiendo errores de tipeo si aplica):
   - 'responsable': string o null (nombre o cargo del responsable del documento dentro del contrato, ej. 'Jefe Asesoria', sin artículos como 'el' o 'la')
   - 'remitente': string o null (nombre, apellido o cargo de la entidad remitente si se buscan documentos enviados/remitidos por alguien)
   - 'destinatario': string o null (nombre, apellido o cargo de la entidad destinataria si se buscan documentos dirigidos/enviados a alguien)
   - 'tipo_documento': string o null (si filtra por un tipo de documento específico como Oficio, Carta, Informe; si pide clasificar 'por tipo de documento', pon null aquí y usa 'clasificar_por': 'tipo_documento')
-  - 'materia': string o null (si se busca por una materia o asunto específico)
+  - 'materia': string o null (si se busca o cuenta por una materia o asunto específico)
   - 'subcontrato': string o null (si se menciona un subcontrato específico)
   - 'usuario_nombre': string o null (si la intención es 'user' y se busca información de un usuario)
   - 'usuario_correo': string o null (si se busca un email de usuario específico)
   - 'doc_nombre': string o null (si se busca un nombre de archivo específico)
-  - 'doc_numero': string o null (si se menciona algún número de documento, providencia o proceso)
+  - 'num_proceso': string o null (si se busca o cuenta por número/código de proceso específico, ej. '4.2.0.0')
+  - 'num_providencia': string o null (si se busca o cuenta por un número de providencia específico)
+  - 'doc_numero': string o null (si se menciona algún código o número de documento general, ej. 'SCINC/IF/1140/2026' o '1140/2026', que NO sea un código de proceso)
+  - 'es_consulta_relacionados': boolean (true si el usuario pregunta si un documento tiene documentos relacionados, cuántos documentos relacionados tiene, cuáles son sus documentos relacionados/seguimiento, o si tiene documentos relacionados duplicados; false en otro caso)
   - 'estado_doc': int o null (1 si pide documentos 'pendiente' o 'pendientes', 2 si pide documentos 'cerrado' o 'cerrados', null si pregunta por el paso de pendiente a cerrado o en general)
   - 'flujo_doc': int o null (1 si pide documentos de 'entrada', 2 si pide documentos de 'salida', null en otro caso)
   - 'solo_mis_documentos': boolean (true SOLO si el usuario pide explícitamente 'mis documentos' en primera persona, false cuando pregunta por otro responsable del contrato como 'Jefe Asesoria')
   - 'es_consulta_tiempos': boolean (true si el usuario pregunta cuánto tarda o demora en promedio un documento en pasar de pendiente a cerrado, tiempos de respuesta/cierre/espera, diferencia de días entre fechas o cumplimiento de plazos; false en otro caso)
-  - 'es_consulta_cantidad': boolean (true SOLO si el usuario pregunta por cifras, cantidades, totales, conteos, clasificaciones estadísticas o 'cuántos/cuántas' documentos existen; false si pide listar documentos o medir tiempos promedio)
-  - 'clasificar_por': string o null (dimensión principal por la que el usuario pide clasificar o agrupar el conteo o las métricas de tiempo: 'responsable', 'mes', 'anio', 'tipo_documento', 'estado', 'flujo', 'subcontrato', 'remitente', o null si es general)
-  - 'anio': int o null (año de 4 dígitos SOLO si el usuario menciona explícitamente un año en su consulta, ej. 2026 o 2025; null si no menciona ningún año)
+  - 'es_consulta_cantidad': boolean (true SOLO si el usuario pregunta por cifras, cantidades, totales, conteos o clasificaciones estadísticas por atributos como proceso, materia, tipo, remitente, destinatario, responsable o fechas; false si pregunta por los documentos relacionados de un documento específico, si pide listar documentos o medir tiempos promedio)
+  - 'clasificar_por': string o null (dimensión principal por la que el usuario pide clasificar o agrupar el conteo o las métricas de tiempo: 'responsable', 'remitente', 'destinatario', 'tipo_documento', 'materia', 'num_proceso', 'fecha', 'mes', 'anio', 'estado', 'flujo', 'subcontrato', o null si es general)
+  - 'anio': int o null (año de 4 dígitos SOLO si el usuario filtra por un año de forma independiente y NO cuando el año es parte del código del documento como 'SCINC/IF/1140/2026' o '1140/2026')
   - 'mes': int o null (número de mes del 1 al 12 SOLO si el usuario menciona explícitamente un mes específico, ej. enero = 1; null si no menciona ningún mes)
   - 'orden_antiguos': boolean (true si pide el documento más antiguo, los documentos más antiguos, más viejos, primeros en el tiempo o de fecha de documento más antigua; false en caso contrario)
   - 'orden_recientes': boolean (true si pide el último documento, los últimos documentos, más recientes o nuevos; false si pide los más antiguos)
   - 'limite': int o null (cantidad de documentos a listar si el usuario pide un número específico, ej. 'Lista los 10 documentos más antiguos' -> 10; null si no especifica un número)
-  - 'fecha_desde': string o null (fecha YYYY-MM-DD SOLO si el usuario escribe explícitamente una fecha de inicio en su consulta; NUNCA inventes fechas del mes actual, pon null)
-  - 'fecha_hasta': string o null (fecha YYYY-MM-DD SOLO si el usuario escribe explícitamente una fecha límite en su consulta; pon null en cualquier otro caso)
+  - 'fecha_desde': string o null (fecha YYYY-MM-DD SOLO si el usuario escribe explícitamente una fecha de inicio o fecha exacta en su consulta; NUNCA inventes fechas del mes actual, pon null)
+  - 'fecha_hasta': string o null (fecha YYYY-MM-DD SOLO si el usuario escribe explícitamente una fecha límite o fecha exacta en su consulta; pon null en cualquier otro caso)
 
 Consulta del usuario: \"" . $query . "\"";
 
@@ -1548,6 +2196,37 @@ $intent = $searchParams['intent'] ?? 'general';
 $keywords = $searchParams['keywords'] ?? [];
 $filters = $searchParams['filters'] ?? [];
 
+// Si detectamos en PHP un número/código de proceso explícito (como "4.2.0.0"), aseguramos que quede en $filters['num_proceso']
+if ($numProcesoExplicitoDetectado !== null) {
+    $filters['num_proceso'] = $numProcesoExplicitoDetectado;
+    if (!empty($filters['doc_numero']) && trim((string)$filters['doc_numero']) === $numProcesoExplicitoDetectado) {
+        $filters['doc_numero'] = null;
+    }
+}
+
+// Si detectamos en PHP un código/número de documento explícito (como "SCINC/IF/1140/2026" o "1140/2026"),
+// aseguramos que quede en $filters['doc_numero'] completo
+if ($docNumeroExplicitoDetectado !== null) {
+    if (empty($filters['doc_numero']) || mb_strlen($docNumeroExplicitoDetectado) > mb_strlen(trim((string)$filters['doc_numero']))) {
+        $filters['doc_numero'] = $docNumeroExplicitoDetectado;
+    }
+}
+
+// Si el usuario escribió una fecha explícita en su consulta y Paso 1 no la colocó en fecha_desde/fecha_hasta, asignarla
+if (!empty($fechasExplicitasEnQuery)) {
+    if (count($fechasExplicitasEnQuery) === 1 && empty($filters['fecha_desde']) && empty($filters['fecha_hasta'])) {
+        $filters['fecha_desde'] = $fechasExplicitasEnQuery[0];
+        $filters['fecha_hasta'] = $fechasExplicitasEnQuery[0];
+    } elseif (count($fechasExplicitasEnQuery) >= 2 && empty($filters['fecha_desde']) && empty($filters['fecha_hasta'])) {
+        $filters['fecha_desde'] = $fechasExplicitasEnQuery[0];
+        $filters['fecha_hasta'] = $fechasExplicitasEnQuery[1];
+    }
+}
+
+// Detectar si es consulta sobre documentos relacionados / seguimiento / duplicados de un documento
+$esConsultaRelacionados = !empty($filters['es_consulta_relacionados']) || $esConsultaRelacionadosPre;
+$filters['es_consulta_relacionados'] = $esConsultaRelacionados;
+
 // Si Paso 1 no extrajo responsable pero el usuario escribió el nombre de algún usuario/responsable del contrato en su consulta, lo detectamos en PHP
 if (empty($filters['responsable']) && !empty($usuariosContrato)) {
     $qNorm = normalizarTexto($query);
@@ -1563,11 +2242,11 @@ if (empty($filters['responsable']) && !empty($usuariosContrato)) {
 
 // Detectar si es consulta de métricas de tiempo / duración entre fechas de documentos
 $pideQueOCualesDocumentos = (bool)preg_match('/\b(qu[eé]\s+documentos?|cu[aá]les?\s+(?:son\s+los\s+)?documentos?|lista(?:r)?\s+(?:los\s+)?documentos?|mostrar\s+(?:los\s+)?documentos?|mu[eé]strame\s+(?:los\s+)?documentos?)\b/iu', $query);
-$esConsultaTiempos = (!$pideQueOCualesDocumentos) && (!empty($filters['es_consulta_tiempos']) || $esConsultaTiemposPre);
+$esConsultaTiempos = (!$esConsultaRelacionados) && (!$pideQueOCualesDocumentos) && (!empty($filters['es_consulta_tiempos']) || $esConsultaTiemposPre);
 $filters['es_consulta_tiempos'] = $esConsultaTiempos;
 
 // Detectar si consulta por documentos que cambiaron de estado pendiente a cerrado (o se cerraron) en un período específico
-$filtrarPorFechaCierre = !$esConsultaTiempos && (!empty($filters['filtrar_por_fecha_cierre']) || $filtrarPorFechaCierrePre);
+$filtrarPorFechaCierre = !$esConsultaRelacionados && !$esConsultaTiempos && (!empty($filters['filtrar_por_fecha_cierre']) || $filtrarPorFechaCierrePre);
 $filters['filtrar_por_fecha_cierre'] = $filtrarPorFechaCierre;
 
 // Detectar si el usuario pide ordenar por fecha de documento más antigua (más antiguos / más viejos / primeros)
@@ -1584,7 +2263,8 @@ if (preg_match('/\b(?:lista(?:r)?|muestra|mu[eé]strame|mostrar|dame|ver|buscar|
 }
 
 // Detectar si la consulta pregunta por cifras, cantidades, totales, conteos o clasificaciones estadísticas
-$esConsultaCantidad = !$esConsultaTiempos && (
+// (Si es una consulta sobre documentos relacionados de un documento específico, ej. "cuantos documentos relacionados tiene la carta SCINC/IF/1140/2026", NO es consulta de conteo histórico general)
+$esConsultaCantidad = !$esConsultaRelacionados && !$esConsultaTiempos && (
     !empty($filters['es_consulta_cantidad']) ||
     (bool)preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|total(?:es)?|conteo|contar|estad[ií]sticas?|clasific\w*|desglos\w*|agrup\w*|n[uú]mero\s+total|n[uú]mero\s+de\s+documentos|registro\s+hist[oó]rico|por\s+mes(?:es)?|por\s+a[ñn]os?|por\s+tipos?)\b/iu', $query)
 );
@@ -1592,15 +2272,25 @@ $esConsultaCantidad = !$esConsultaTiempos && (
 // Si el usuario pide explícitamente listar/mostrar los N documentos (ej. "Lista los 10 documentos más antiguos") y no pregunta cuántos hay, no es consulta de cantidad
 $pideListarDocumentos = (bool)preg_match('/\b(lista(?:r)?|muestra|mu[eé]strame|mostrar|dame\s+los|ver\s+los|cu[aá]les\s+son\s+los)\b/iu', $query) &&
                         !preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|conteo|estad[ií]sticas?|clasific\w*|desglos\w*|por\s+mes(?:es)?|por\s+a[ñn]os?|promedio|tarda|demora)\b/iu', $query);
-if ($pideListarDocumentos) {
+if ($pideListarDocumentos || $esConsultaRelacionados) {
     $esConsultaCantidad = false;
 }
 $filters['es_consulta_cantidad'] = $esConsultaCantidad;
 
-// Detectar dimensión de clasificación solicitada (mes, año, tipo_documento, estado, flujo, responsable/usuario, subcontrato, remitente)
+// Detectar dimensión de clasificación solicitada a través de todos los atributos del documento
 if (empty($filters['clasificar_por'])) {
     if (preg_match('/\b(por\s+(?:responsables?|usuarios?|encargados?|personas?)|seg[uú]n\s+(?:su\s+)?(?:responsable|usuario))\b/iu', $query)) {
         $filters['clasificar_por'] = 'responsable';
+    } elseif (preg_match('/\b(por\s+(?:n[uú]meros?\s+de\s+|c[oó]digos?\s+de\s+)?procesos?|seg[uú]n\s+(?:su\s+)?(?:n[uú]mero\s+de\s+|c[oó]digo\s+de\s+)?proceso)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'num_proceso';
+    } elseif (preg_match('/\b(por\s+(?:materias?|asuntos?)|seg[uú]n\s+(?:su\s+)?(?:materia|asunto))\b/iu', $query)) {
+        $filters['clasificar_por'] = 'materia';
+    } elseif (preg_match('/\b(por\s+remitentes?|seg[uú]n\s+(?:su\s+)?remitente)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'remitente';
+    } elseif (preg_match('/\b(por\s+destinatarios?|seg[uú]n\s+(?:su\s+)?destinatario)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'destinatario';
+    } elseif (preg_match('/\b(por\s+fechas?(?:\s+de\s+documento)?|por\s+d[ií]as?|seg[uú]n\s+(?:su\s+)?fecha)\b/iu', $query)) {
+        $filters['clasificar_por'] = 'fecha';
     } elseif (preg_match('/\b(por\s+mes(?:es)?|mensual(?:es|mente)?|cada\s+mes|mes\s+a\s+mes)\b/iu', $query)) {
         $filters['clasificar_por'] = 'mes';
     } elseif (preg_match('/\b(por\s+a[ñn]os?|anual(?:es|mente)?|cada\s+a[ñn]o|a[ñn]o\s+a\s+a[ñn]o)\b/iu', $query)) {
@@ -1613,8 +2303,6 @@ if (empty($filters['clasificar_por'])) {
         $filters['clasificar_por'] = 'flujo';
     } elseif (preg_match('/\b(por\s+subcontratos?)\b/iu', $query)) {
         $filters['clasificar_por'] = 'subcontrato';
-    } elseif (preg_match('/\b(por\s+remitentes?)\b/iu', $query)) {
-        $filters['clasificar_por'] = 'remitente';
     }
 }
 
@@ -1623,7 +2311,7 @@ if (empty($filters['clasificar_por'])) {
 $mencionaAmbosEstados = (bool)(preg_match('/\bpendientes?\b/iu', $query) && preg_match('/\bcerrad[oa]s?\b/iu', $query));
 if ($filtrarPorFechaCierre) {
     $filters['estado_doc'] = 2;
-} elseif ($mencionaAmbosEstados || $esConsultaTiempos) {
+} elseif ($mencionaAmbosEstados || $esConsultaTiempos || $esConsultaRelacionados) {
     $filters['estado_doc'] = null;
 } elseif (empty($filters['estado_doc']) && ($filters['clasificar_por'] ?? null) !== 'estado') {
     if (preg_match('/\bpendientes?\b/iu', $query)) {
@@ -1648,35 +2336,39 @@ foreach ($mapaMesesNombre as $nombreM => $numM) {
 }
 if ($mesExplicitoDetectado !== null && empty($filters['mes'])) {
     $filters['mes'] = $mesExplicitoDetectado;
-} elseif ($mesExplicitoDetectado === null && (($filters['clasificar_por'] ?? null) === 'mes' || $ordenAntiguos || !empty($filters['orden_recientes']) || $esConsultaTiempos)) {
+} elseif ($mesExplicitoDetectado === null && (($filters['clasificar_por'] ?? null) === 'mes' || $ordenAntiguos || !empty($filters['orden_recientes']) || $esConsultaTiempos || $esConsultaRelacionados)) {
     $filters['mes'] = null;
 }
 
-// Detectar año explícito (ej. "en el año 2026", "del 2026", "2025")
+// Detectar año explícito independiente (ej. "en el año 2026", "del 2026", "2025"),
+// ignorando años que forman parte de un código con "/" o "-" como "SCINC/IF/1140/2026" o "1140/2026"
 $anioExplicitoDetectado = null;
-if (preg_match('/\b(19\d{2}|20\d{2})\b/u', $queryLower, $mAnio)) {
+if (preg_match('/(?<![\/\-])\b(19\d{2}|20\d{2})\b(?![\/\-])/u', $queryLower, $mAnio)) {
     $anioExplicitoDetectado = (int)$mAnio[1];
     if (empty($filters['anio'])) {
         $filters['anio'] = $anioExplicitoDetectado;
     }
-} elseif ($ordenAntiguos || !empty($filters['orden_recientes']) || $esConsultaTiempos) {
-    // Si pide los más antiguos, más recientes o métricas de tiempo sin mencionar un año en su consulta, no restringir al año actual
+} elseif (!empty($filters['doc_numero']) || !empty($filters['num_proceso']) || $esConsultaRelacionados || $ordenAntiguos || !empty($filters['orden_recientes']) || $esConsultaTiempos) {
+    // Si busca por código de documento (ej. 1140/2026), código de proceso, documentos relacionados, más antiguos, más recientes o métricas de tiempo sin año independiente, no restringir por año
     $filters['anio'] = null;
 }
 
-// Si ya tenemos filtro por año o mes entero, limpiamos fecha_desde / fecha_hasta redundantes
-if (!empty($filters['anio']) || !empty($filters['mes'])) {
+// Si ya tenemos filtro por año o mes entero (y no se escribió una fecha exacta DD-MM-YYYY), limpiamos fecha_desde / fecha_hasta redundantes
+if (empty($fechasExplicitasEnQuery) && (!empty($filters['anio']) || !empty($filters['mes']))) {
     $filters['fecha_desde'] = null;
     $filters['fecha_hasta'] = null;
 }
 
-// Si se detectaron filtros de variables de documentos, consulta de tiempos o consulta de cantidades de documentos, asegurar intent document
+// Si se detectaron filtros de variables de documentos, documentos relacionados, consulta de tiempos o consulta de cantidades de documentos, asegurar intent document
 if (!empty($customVars['id_responsable']) || !empty($customVars['id_remitente']) || !empty($customVars['id_destinatario']) ||
     !empty($filters['responsable']) || !empty($filters['remitente']) || !empty($filters['destinatario']) ||
+    !empty($filters['doc_numero']) || !empty($filters['num_proceso']) || !empty($filters['num_providencia']) ||
+    !empty($filters['tipo_documento']) || !empty($filters['materia']) ||
     !empty($filters['estado_doc']) || !empty($filters['flujo_doc']) ||
     !empty($filters['orden_antiguos']) || !empty($filters['orden_recientes']) ||
     !empty($filters['clasificar_por']) || !empty($filters['anio']) || !empty($filters['mes']) ||
-    $esConsultaTiempos || $esConsultaCantidad) {
+    !empty($filters['fecha_desde']) || !empty($filters['fecha_hasta']) ||
+    $esConsultaRelacionados || $esConsultaTiempos || $esConsultaCantidad) {
     $intent = 'document';
 }
 
@@ -1686,9 +2378,12 @@ $stopwords = [
     'documento', 'documentos', 'listar', 'lista', 'mostrar', 'muestra', 'muestrame', 'muéstrame',
     'todos', 'todas', 'ver', 'dame', 'entregar', 'especifico', 'específicos', 'especifica', 'especificas',
     'buscar', 'busca', 'consultar', 'consulta', 'con', 'del', 'los', 'las', 'unos', 'unas', 'para', 'por',
-    'sobre', 'materia', 'ultimo', 'ultimos', 'último', 'últimos', 'ultima', 'ultimas', 'última', 'últimas',
+    'sobre', 'materia', 'materias', 'asunto', 'asuntos', 'proceso', 'procesos', 'codigo', 'código', 'codigos', 'códigos',
+    'ultimo', 'ultimos', 'último', 'últimos', 'ultima', 'ultimas', 'última', 'últimas',
     'antiguo', 'antiguos', 'antigua', 'antiguas', 'viejo', 'viejos', 'vieja', 'viejas', 'primer', 'primero', 'primeros', 'primera', 'primeras',
     'mas', 'más', 'estan', 'están', 'esta', 'está', 'que', 'cual', 'cuál',
+    'relacionado', 'relacionados', 'relacionada', 'relacionadas', 'duplicado', 'duplicados', 'duplicada', 'duplicadas',
+    'seguimiento', 'seguimientos', 'indicame', 'indícame', 'indicar', 'indica', 'carta', 'oficio', 'informe', 'providencia', 'memorandum', 'memorándum', 'resolucion', 'resolución',
     'tarda', 'tardan', 'demora', 'demoran', 'tiempo', 'tiempos', 'promedio', 'promedios', 'dia', 'dias', 'día', 'días',
     'pasar', 'pasa', 'pasan', 'cierre', 'cerrar', 'cerrarse', 'espera', 'plazo', 'plazos', 'entre', 'diferencia', 'metricas', 'métricas',
     'reciente', 'recientes', 'nuevo', 'nuevos', 'nueva', 'nuevas', 'actual', 'actuales', 'registrado',
@@ -1714,10 +2409,10 @@ if (is_array($keywords)) {
 }
 $keywords = $filteredKeywords;
 
-// Si el usuario consulta por "más antiguos" / "último documento" / "recientes" / métricas de tiempo o cifras históricas
-// sin haber escrito un año o mes explícito, limpiamos fecha_desde / fecha_hasta para abarcar todo el registro histórico.
-$mentionsExplicitYearOrMonth = ($mesExplicitoDetectado !== null) || ($anioExplicitoDetectado !== null);
-if (!$mentionsExplicitYearOrMonth && ($ordenAntiguos || $esConsultaTiempos || preg_match('/(últim|ultim|recient|nuev|antigu|viej|primer)/iu', $queryLower) || $esConsultaCantidad)) {
+// Si el usuario consulta por "más antiguos" / "último documento" / "recientes" / documentos relacionados / métricas de tiempo o cifras históricas
+// sin haber escrito un año, mes o fecha explícita, limpiamos fecha_desde / fecha_hasta para abarcar todo el registro histórico.
+$mentionsExplicitYearOrMonthOrDate = ($mesExplicitoDetectado !== null) || ($anioExplicitoDetectado !== null) || !empty($fechasExplicitasEnQuery);
+if (!$mentionsExplicitYearOrMonthOrDate && ($esConsultaRelacionados || $ordenAntiguos || $esConsultaTiempos || preg_match('/(últim|ultim|recient|nuev|antigu|viej|primer)/iu', $queryLower) || $esConsultaCantidad)) {
     $filters['fecha_desde'] = null;
     $filters['fecha_hasta'] = null;
 }
@@ -1755,7 +2450,7 @@ if ($intent === 'contract' || $intent === 'general') {
     }
 }
 
-if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad && !$esConsultaTiempos) {
+if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad && !$esConsultaTiempos && !$esConsultaRelacionados) {
     $usuariosFormateados = [];
     foreach ($usuariosContrato as $uc) {
         $nombreCompletoU = trim(preg_replace('/\s+/u', ' ', ($uc['nombre'] ?? '') . ' ' . ($uc['apellido_p'] ?? '') . ' ' . ($uc['apellido_m'] ?? '')));
@@ -1790,7 +2485,15 @@ if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad && !$e
 }
 
 if ($intent === 'document' || $intent === 'general') {
-    if ($esConsultaTiempos) {
+    if ($esConsultaRelacionados) {
+        // Cuando pregunta por documentos relacionados, cuántos documentos relacionados tiene o si tiene documentos relacionados duplicados
+        $resRel = consultarDocumentosRelacionados($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
+        if (!isset($resRel['error'])) {
+            $dbResults['analisis_documentos_relacionados'] = $resRel;
+        } else {
+            $dbResults['error_consulta_documentos'] = $resRel['error'];
+        }
+    } elseif ($esConsultaTiempos) {
         // Cuando pregunta por tiempos entre fechas (ej. cuánto tarda en pasar de pendiente a cerrado, tiempo promedio general o por responsable/usuario/tipo/mes/año)
         $resTiempos = calcularMetricasTiemposDocumentos($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
         if (!isset($resTiempos['error'])) {
@@ -1819,14 +2522,22 @@ if ($intent === 'document' || $intent === 'general') {
 }
 
 // Cerrar conexión
-mysqli_close($cnx);
+//mysqli_close($cnx);
 
 // PASO 3: Construcción de la respuesta final con Gemini (RAG)
 $instruccionesOrdenDetalle = $ordenAntiguos
     ? "3. ORDEN POR FECHA DE DOCUMENTO MÁS ANTIGUA: El usuario solicitó los documentos más antiguos. La lista `documentos` ya viene ordenada desde la fecha de documento (`fecha_documento`) más antigua hacia adelante (`documentos[0]` es el más antiguo). Respeta estrictamente ese orden ascendente y muestra todos los documentos entregados en `documentos`."
     : "3. ORDEN POR FECHA DE DOCUMENTO MÁS RECIENTE: La lista `documentos` viene ordenada desde la fecha de documento (`fecha_documento`) más reciente hacia atrás (`documentos[0]` es el más reciente). Si pide 'el último documento' en singular, destaca `documentos[0]`; si pide una lista de documentos, muéstralos respetando este orden.";
 
-if ($esConsultaTiempos) {
+if ($esConsultaRelacionados) {
+    $instruccionesEspecificas = "3. CONSULTA DE DOCUMENTOS RELACIONADOS, SEGUIMIENTO Y DUPLICADOS: El usuario está consultando sobre los documentos relacionados (Seguimiento) de un documento específico (como una carta u oficio escrito con su código completo ej. `SCINC/IF/1140/2026` o abreviado ej. `1140/2026`). Responde utilizando EXCLUSIVAMENTE los datos en `analisis_documentos_relacionados`:
+   - Si `documento_encontrado` es `false`, indícale claramente que no se encontró ningún documento con ese código/número dentro de su contrato.
+   - Para cada elemento en `analisis_por_documento`, identifica primero el `documento_consultado` (`tipo_documento`, `num_documento`, `materia`, `fecha_documento`, `estado_documento`, `responsable`).
+   - Si el usuario pregunta **si tiene documentos relacionados**: responde claramente **Sí** o **No** según `tiene_documentos_relacionados`, e indícale cuántos tiene y cuáles son.
+   - Si el usuario pregunta **cuántos documentos relacionados tiene**: indica tanto la cantidad de **documentos relacionados únicos** (`cantidad_documentos_relacionados_unicos`) como la cantidad total de **registros vinculados en seguimiento** (`cantidad_registros_documentos_relacionados`, que puede ser mayor si alguno está repetido/duplicado), y lista los documentos encontrados en `documentos_relacionados`.
+   - Si el usuario pregunta **si tiene documentos relacionados duplicados**: responde claramente **Sí** o **No** según `tiene_documentos_relacionados_duplicados`. Si `tiene_documentos_relacionados_duplicados` es `true`, detalla cada elemento de `duplicados_detectados` indicando su `tipo_documento`, `num_documento`, `materia`, cuántas veces está repetido (`veces_repetido`) y el motivo (`tipo_duplicado`).
+   - Siempre que menciones un documento (ya sea el consultado o sus documentos relacionados), incluye su enlace de descarga directa en formato Markdown: `[Descargar Documento](negocio/descargarDocumento.php?idDocumento=ID)` donde ID es su `id_documento`.";
+} elseif ($esConsultaTiempos) {
     $instruccionesEspecificas = "3. CONSULTA DE TIEMPOS Y MÉTRICAS ENTRE FECHAS DE DOCUMENTOS: El usuario está consultando por tiempos de gestión, demora promedio en pasar de Pendiente a Cerrado, diferencia entre fechas de documentos o cumplimiento de plazos. Responde utilizando EXCLUSIVAMENTE los datos calculados en `metricas_tiempos_fechas_documentos`:
    - Entrega primero las **métricas generales del contrato** (`resumen_general_tiempos`):
      - **Tiempo promedio en pasar de Pendiente a Cerrado** (`promedio_dias_pendiente_a_cerrado` en días), indicando también el mínimo (`minimo_dias_cierre`), máximo (`maximo_dias_cierre`), el promedio medido desde `fecha_documento` a cierre (`promedio_dias_fecha_documento_a_cierre`) y desde `fecha_recepcion` a cierre (`promedio_dias_fecha_recepcion_a_cierre`).
@@ -1836,12 +2547,18 @@ if ($esConsultaTiempos) {
    - Además, presenta el **desglose clasificado** según lo que haya pedido el usuario (o incluye un resumen por **Responsable / Usuario** de `tiempos_por_responsable` y por **Tipo de Documento** de `tiempos_por_tipo_documento`; si pregunta por mes, año, flujo, subcontrato o remitente, usa `tiempos_por_mes`, `tiempos_por_anio`, `tiempos_por_flujo`, `tiempos_por_subcontrato` o `tiempos_por_remitente`).
 4. PROHIBIDO INVENTAR CIFRAS: Usa exactamente los promedios en días y conteos provistos en `metricas_tiempos_fechas_documentos`.";
 } elseif ($esConsultaCantidad) {
-    $instruccionesEspecificas = "3. CONSULTA DE CIFRAS, CANTIDADES Y CLASIFICACIÓN DE DOCUMENTOS: El usuario está consultando por cifras, cantidades, totales o clasificación de documentos (por mes, año, tipo de documento, estado, flujo, responsable o subcontrato). Responde utilizando EXCLUSIVAMENTE los conteos contenidos en `estadisticas_historicas_documentos`:
-   - Si pregunta por clasificación **por mes** (ej. 'cuántos documentos existen por mes en el año 2026'): presenta de forma clara y ordenada el desglose mensual de `desglose_por_mes` (indicando cada mes, su cantidad total, y si aporta valor, cuántos están pendientes/cerrados o por tipo), junto con el `total_historico_documentos` del período consultado.
-   - Si pregunta por clasificación **por año**: presenta los datos de `desglose_por_anio`.
-   - Si pregunta por clasificación **por tipo de documento**: presenta los datos de `desglose_por_tipo_documento` (Oficio, Carta, Informe, etc.).
-   - Si pregunta por **estado**, **flujo**, **responsable** o **subcontrato**: utiliza `desglose_por_estado`, `desglose_por_flujo`, `desglose_por_responsable` o `desglose_por_subcontrato` según corresponda.
-4. PROHIBIDO RETORNAR DETALLE DE DOCUMENTOS: En consultas de cifras, cantidades y clasificaciones, entrega únicamente los números, totales y desgloses estadísticos solicitados. NO listes ni devuelvas el detalle individual de documentos (no incluyas números de documento individuales, materias ni enlaces de descarga).";
+    $instruccionesEspecificas = "3. CONSULTA DE CIFRAS, CANTIDADES Y CLASIFICACIÓN DE DOCUMENTOS POR TODOS SUS ATRIBUTOS: El usuario está consultando por cifras, cantidades, totales o clasificación de documentos a través de cualquiera de sus atributos (número/código de proceso como `4.2.0.0`, tipo de documento, materia, remitente, destinatario, responsable, fechas, mes, año, estado, flujo o subcontrato). Responde utilizando EXCLUSIVAMENTE los conteos contenidos en `estadisticas_historicas_documentos`:
+   - Indica siempre de forma destacada el `total_historico_documentos` que cumple con los criterios consultados (ver `filtros_aplicados_en_conteo`), junto con cuántos están en estado **Pendiente** y **Cerrado** (`desglose_por_estado`) y cuántos son de **Entrada** y **Salida** (`desglose_por_flujo`).
+   - Según el atributo por el que pregunte o pida clasificar el usuario, presenta el desglose correspondiente:
+     - **Por Número / Código de Proceso** (ej. '¿cuántos documentos tienen código de proceso 4.2.0.0?' o 'clasificar por proceso'): usa `desglose_por_num_proceso` (y muestra también su distribución por `desglose_por_tipo_documento` y `desglose_por_responsable`).
+     - **Por Tipo de Documento**: usa `desglose_por_tipo_documento` (Oficio, Carta, Informe, etc.).
+     - **Por Materia / Asunto**: usa `desglose_por_materia`.
+     - **Por Remitente**: usa `desglose_por_remitente`.
+     - **Por Destinatario**: usa `desglose_por_destinatario`.
+     - **Por Responsable / Usuario**: usa `desglose_por_responsable`.
+     - **Por Fechas (Fecha exacta, Mes o Año)**: usa `desglose_por_fecha_documento`, `desglose_por_mes` o `desglose_por_anio`.
+     - **Por Subcontrato**: usa `desglose_por_subcontrato`.
+4. PROHIBIDO RETORNAR DETALLE INDIVIDUAL DE DOCUMENTOS: En consultas de cifras, cantidades y clasificaciones, entrega únicamente los números, totales y desgloses estadísticos solicitados.";
 } else {
     $instruccionesEspecificas = "{$instruccionesOrdenDetalle}
 4. VARIABLES DE DOCUMENTOS: Cuando muestres uno o más documentos, incluye sus datos clave de forma ordenada:
@@ -1877,9 +2594,28 @@ Instrucciones obligatorias para elaborar tu respuesta:
 
 $stage2Res = llamarGemini($apiKey, $stage2Prompt, false, 30);
 
+// Sumar tokens del Paso 1 + Paso 2
+$tokensEntrada = (int)($stage1Res['usage']['prompt_tokens'] ?? 0) + (int)($stage2Res['usage']['prompt_tokens'] ?? 0);
+$tokensSalida  = (int)($stage1Res['usage']['completion_tokens'] ?? 0) + (int)($stage2Res['usage']['completion_tokens'] ?? 0);
+$tokensTotales = (int)($stage1Res['usage']['total_tokens'] ?? 0) + (int)($stage2Res['usage']['total_tokens'] ?? 0);
+$modeloUsado   = $stage2Res['model_used'] ?? ($stage1Res['model_used'] ?? 'fallback-local');
+// Registrar el consumo por contrato y usuario en BD
+registrarConsumoIA(
+    $cnx,
+    (int)$userContractId,
+    (int)$userId,
+    $modeloUsado,
+    $intent,
+    $tokensEntrada,
+    $tokensSalida,
+    $tokensTotales,
+    $query
+);
+mysqli_close($cnx);
+
 $finalAnswer = isset($stage2Res['text'])
     ? $stage2Res['text']
-    : generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters);
+    : generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters, $esConsultaRelacionados);
 
 echo json_encode([
     'success' => true,
