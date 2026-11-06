@@ -20,6 +20,10 @@ session_write_close();
 $userId = (int)$usuarioSession->getIdUsuario();
 $userProfile = (int)$usuarioSession->getIdPerfil();
 $userContractId = (int)$usuarioSession->getIdContrato();
+if ($userContractId !== 41) {
+    echo json_encode(['error' => 'Acceso restringido: El módulo Chat con IA solo está habilitado para usuarios pertenecientes al contrato autorizado.']);
+    exit;
+}
 $userFullName = trim($usuarioSession->getNombre() . ' ' . $usuarioSession->getApellidoP() . ' ' . $usuarioSession->getApellidoM());
 $userLoginName = $usuarioSession->getNombreUsuario();
 
@@ -2912,9 +2916,9 @@ $userContractName = $currentUser['nombre_contrato'] ?? ('Contrato #' . $userCont
 $userFullName = trim(preg_replace('/\s+/u', ' ', ($currentUser['nombre'] ?? '') . ' ' . ($currentUser['apellido_p'] ?? '') . ' ' . ($currentUser['apellido_m'] ?? '')));
 $userLoginName = $currentUser['nombre_usuario'];
 
-if ($userContractId <= 0) {
+if ($userContractId !== 41) {
     mysqli_close($cnx);
-    echo json_encode(['error' => 'El usuario en sesión no tiene un contrato asignado para realizar consultas.']);
+    echo json_encode(['error' => 'Acceso restringido: El módulo Chat con IA solo está habilitado para usuarios pertenecientes al contrato autorizado.']);
     exit;
 }
 

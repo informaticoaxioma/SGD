@@ -119,9 +119,11 @@
             <li>
                 <a href=#buscador onclick="cargarBuscador()"><i class="fa fa-fw fa-search"></i> Buscador</a>
             </li>      
+            <?php if ((int)$usuarioSession->getIdContrato() === 41): ?>
             <li>
                 <a href="#chatIA" onclick="cargarChatIA()"><i class="fa fa-fw fa-comments"></i> Chat con IA</a>
             </li>
+            <?php endif; ?>
 
 <!--            <li>
                 <a href="javascript:;" data-toggle="collapse" data-target="#hitosContractuales"><i class="fa fa-fw fa-briefcase"></i> Hitos Contractuales<i class="fa fa-fw fa-caret-down"></i></a>

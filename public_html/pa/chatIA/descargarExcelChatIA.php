@@ -14,6 +14,11 @@ $userContractId = is_object($usuarioSession) && method_exists($usuarioSession, '
     : 0;
 session_write_close();
 
+if ($userContractId !== 41) {
+    http_response_code(403);
+    die("Acceso restringido: Este módulo solo está habilitado para usuarios del contrato autorizado.");
+}
+
 $token = isset($_GET['token']) ? trim((string)$_GET['token']) : '';
 if ($token === '' || !preg_match('/^[a-f0-9]{16,64}$/i', $token)) {
     http_response_code(404);

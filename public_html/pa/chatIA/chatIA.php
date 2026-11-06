@@ -11,6 +11,9 @@ if (!isset($_SESSION['usuario'])) {
 }
 $usuarioSession = $_SESSION['usuario'];
 $idContratoUsuario = (int)$usuarioSession->getIdContrato();
+if ($idContratoUsuario !== 41) {
+    die('<div class="alert alert-danger" style="margin:20px;"><i class="fa fa-lock"></i>&nbsp;Acceso restringido: El módulo Chat con IA solo está habilitado para usuarios del contrato autorizado.</div>');
+}
 $nombreUsuarioCompleto = trim($usuarioSession->getNombre() . " " . $usuarioSession->getApellidoP() . " " . $usuarioSession->getApellidoM());
 
 $nombreContratoUsuario = "Contrato #" . $idContratoUsuario;
