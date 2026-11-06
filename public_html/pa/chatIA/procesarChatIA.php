@@ -2159,8 +2159,124 @@ function limpiarTextoUtf8Seguro($str) {
 }
 
 /**
+ * Decodifica una cadena literal PDF `(...)` procesando escapes octales (\ddd),
+ * saltos/tabulaciones, UTF-16BE (BOM \xFE\xFF) y convirtiendo de Windows-1252/ISO-8859-1 a UTF-8 limpio.
+ */
+function decodificarLiteralPdf($strP) {
+    if ($strP === '') {
+        return '';
+    }
+    // Continuación de línea en literales PDF: barra invertida seguida de salto de línea
+    $strP = preg_replace('/\\\\(?:\r\n|\r|\n)/', '', $strP);
+
+    $out = '';
+    $len = strlen($strP);
+    $i = 0;
+    while ($i < $len) {
+        $ch = $strP[$i];
+        if ($ch === '\\' && ($i + 1) < $len) {
+            $next = $strP[$i + 1];
+            if ($next >= '0' && $next <= '7') {
+                $oct = $next;
+                $i += 2;
+                if ($i < $len && $strP[$i] >= '0' && $strP[$i] <= '7') {
+                    $oct .= $strP[$i];
+                    $i++;
+                    if ($i < $len && $strP[$i] >= '0' && $strP[$i] <= '7') {
+                        $oct .= $strP[$i];
+                        $i++;
+                    }
+                }
+                $out .= chr(octdec($oct) & 0xFF);
+                continue;
+            }
+            switch ($next) {
+                case 'n': $out .= "\n"; break;
+                case 'r': $out .= "\r"; break;
+                case 't': $out .= "\t"; break;
+                case 'b': $out .= ''; break;
+                case 'f': $out .= ' '; break;
+                case '(': $out .= '('; break;
+                case ')': $out .= ')'; break;
+                case '\\': $out .= '\\'; break;
+                default: $out .= $next; break;
+            }
+            $i += 2;
+        } else {
+            $out .= $ch;
+            $i++;
+        }
+    }
+
+    // Si tiene BOM UTF-16BE (\xFE\xFF), convertir desde UTF-16BE a UTF-8
+    if (strlen($out) >= 2 && ord($out[0]) === 0xFE && ord($out[1]) === 0xFF) {
+        $u16 = substr($out, 2);
+        if (function_exists('mb_convert_encoding')) {
+            $out = @mb_convert_encoding($u16, 'UTF-8', 'UTF-16BE');
+        }
+    } elseif (function_exists('mb_check_encoding') && !mb_check_encoding($out, 'UTF-8')) {
+        if (function_exists('mb_convert_encoding')) {
+            $out = @mb_convert_encoding($out, 'UTF-8', 'Windows-1252');
+        }
+    }
+
+    // Eliminar caracteres de control salvo saltos de línea y tabuladores
+    $out = @preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', (string)$out);
+    return is_string($out) ? $out : '';
+}
+
+/**
+ * Evalúa si una línea extraída de un PDF corresponde a texto humano legible en español/inglés
+ * y descarta basura binaria de fuentes TrueType (`FontFile2`), tablas de glifos o metadatos de fuentes (`Calibri`, `Arial`).
+ */
+function esLineaLegibleHumana($linea) {
+    $l = trim((string)$linea);
+    if ($l === '') {
+        return false;
+    }
+    // Descartar líneas que solo nombran tipografías embebidas o URLs aisladas de plantilla
+    if (preg_match('/^(?:(?:Calibri|Arial|Times\s*New\s*Roman|Helvetica|Verdana|Tahoma|Cambria|Symbol)(?:\s*[-,]\s*(?:Bold|Italic|Regular|MT))?\s*)+$/iu', $l)) {
+        return false;
+    }
+    if (preg_match('/^https?:\/\/\S+$/i', $l)) {
+        return false;
+    }
+
+    $lenChars = mb_strlen($l, 'UTF-8');
+    if ($lenChars < 2) {
+        return false;
+    }
+
+    // Contar letras, dígitos y caracteres sospechosos (símbolos matemáticos/binarios de tablas TrueType)
+    $letras = preg_match_all('/[\p{L}]/u', $l);
+    $digitos = preg_match_all('/[\p{N}]/u', $l);
+    $alfanum = $letras + $digitos;
+    if ($alfanum < 2) {
+        return false;
+    }
+
+    // Contar caracteres permitidos habituales en documentos administrativos en español
+    $normales = preg_match_all('/[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ\s\.,;:\/\-_º°ª\(\)\[\]"%\$\'&@#\+\?¡!]/u', $l);
+    $ratioNormal = $normales / max(1, $lenChars);
+    $ratioAlfanum = $alfanum / max(1, $lenChars);
+
+    // Si menos del 85% son caracteres normales de texto administrativo o menos del 45% son alfanuméricos, es basura binaria
+    if ($ratioNormal < 0.85 || $ratioAlfanum < 0.45) {
+        return false;
+    }
+
+    // Rechazar secuencias típicas de bytecode de fuentes TrueType (`++`, `99//`, `@_`, `¸ÿ`, etc.)
+    if (preg_match('/(?:\+{3,}|\/{3,}|\?{3,}|[\x{0080}-\x{00BF}\x{00D7}\x{00F7}\x{00FE}\x{00FF}]{2,})/u', $l)) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
  * Extrae texto legible en PHP desde un archivo binario (PDF digital, DOCX, XLSX, TXT, CSV, HTML)
- * sin usar expresiones regulares con backtracking profundo para evitar agotar el JIT stack o la memoria.
+ * reconstruyendo correctamente los bloques `BT ... ET` y los arreglos de kerning `[...] TJ` de PDFs generados por Word/Acrobat
+ * sin mezclar streams binarios de fuentes (`FontFile2`) ni agotar el JIT stack de PCRE.
  */
 function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') {
     $len = strlen((string)$binario);
@@ -2240,24 +2356,30 @@ function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') 
         }
     }
 
-    // 3. Archivos PDF: escaneo rápido con strpos() sin backtracking PCRE y regex desenrollada segura para JIT
+    // 3. Archivos PDF: reconstrucción de texto desde bloques `BT ... ET` y operadores `TJ` / `Tj`
+    //    excluyendo streams de fuentes TrueType (`FontFile2` / `/Length1`), imágenes y metadatos.
     if ($mimeReal === 'application/pdf' || strncmp(substr((string)$binario, 0, 5), '%PDF-', 5) === 0) {
-        $fragmentos = [];
-        $maxScanLen = min($len, 5 * 1024 * 1024); // Escanear hasta los primeros 5 MB
+        $maxScanLen = min($len, 5 * 1024 * 1024);
         $offset = 0;
         $streamsProcesados = 0;
-        $caracteresAcumulados = 0;
+        $streamsContenido = [];
+        $cmapHexToUtf8 = [];
 
-        while ($offset < $maxScanLen && $streamsProcesados < 70 && $caracteresAcumulados < 14000) {
+        while ($offset < $maxScanLen && $streamsProcesados < 90) {
             $posStream = strpos($binario, 'stream', $offset);
             if ($posStream === false || $posStream >= $maxScanLen) {
                 break;
             }
-            // Verificar que no sea la palabra 'endstream'
+            // Evitar coincidencia con 'endstream'
             if ($posStream >= 3 && substr($binario, $posStream - 3, 3) === 'end') {
                 $offset = $posStream + 6;
                 continue;
             }
+
+            // Inspeccionar el diccionario del objeto PDF justo antes de `stream` (últimos 450 bytes)
+            $dictStart = max(0, $posStream - 450);
+            $dictHeader = substr($binario, $dictStart, $posStream - $dictStart);
+
             $startData = $posStream + 6;
             if ($startData < $len && $binario[$startData] === "\r") {
                 $startData++;
@@ -2273,8 +2395,13 @@ function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') 
             $offset = $posEnd + 9;
             $streamLen = $posEnd - $startData;
 
-            // Omitir streams vacíos o mayores a 350 KB (que corresponden a imágenes embebidas o fuentes pesadas)
             if ($streamLen <= 0 || $streamLen > 358400) {
+                continue;
+            }
+
+            // DESCARTAR streams de fuentes embebidas (`/Length1`, `/FontFile`, `/Subtype /TrueType`, `/CIDFontType0C`),
+            // imágenes (`/Subtype /Image`), tablas `/XRef`, `/ObjStm` o `/Metadata` XMP
+            if (preg_match('/\/(?:Subtype\s*\/(?:Image|XML|Type1C|CIDFontType0C|TrueType|OpenType)|FontFile[123]?|Length1|Type\s*\/(?:XRef|ObjStm|Metadata|FontDescriptor))\b/i', $dictHeader)) {
                 continue;
             }
 
@@ -2286,52 +2413,173 @@ function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') 
                 $decoded = @gzinflate($rawStream);
             }
             if ($decoded === false || !is_string($decoded) || $decoded === '') {
-                if (strpos($rawStream, 'Tj') !== false || strpos($rawStream, 'TJ') !== false) {
+                if (strpos($rawStream, 'BT') !== false || strpos($rawStream, 'beginbfchar') !== false || strpos($rawStream, 'beginbfrange') !== false) {
                     $decoded = $rawStream;
                 } else {
                     continue;
                 }
             }
 
-            // Omitir streams descomprimidos gigantes o sin operadores de texto PDF
-            if (strlen($decoded) > 524288 || (strpos($decoded, '(') === false && strpos($decoded, '<') === false)) {
+            if (strlen($decoded) > 524288) {
                 continue;
             }
 
-            // Patrón desenrollado que NUNCA agota el JIT stack de PCRE
-            if (@preg_match_all('/\(([^()\\\\]*(?:\\\\.[^()\\\\]*)*)\)/s', $decoded, $mParen)) {
-                foreach ($mParen[1] as $strP) {
-                    if (strlen($strP) > 2000) {
-                        continue;
-                    }
-                    $strP = strtr($strP, [
-                        '\\(' => '(',
-                        '\\)' => ')',
-                        '\\\\' => '\\',
-                        '\\n' => "\n",
-                        '\\r' => ' ',
-                        '\\t' => ' '
-                    ]);
-                    $strP = preg_replace_callback('/\\\\([0-7]{1,3})/', function ($mOct) {
-                        return chr(octdec($mOct[1]));
-                    }, $strP);
-                    $strUtf = limpiarTextoUtf8Seguro($strP);
-                    if ($strUtf !== '' && @preg_match('/[\p{L}\p{N}]{2,}/u', $strUtf)) {
-                        $fragmentos[] = $strUtf;
-                        $caracteresAcumulados += strlen($strUtf);
-                        if ($caracteresAcumulados >= 14000) {
-                            break;
+            // Si es un stream CMap `/ToUnicode` (`beginbfchar` / `beginbfrange`), registrar tabla de traducción hexadecimal -> UTF-8
+            if (strpos($decoded, 'beginbfchar') !== false || strpos($decoded, 'beginbfrange') !== false) {
+                if (@preg_match_all('/beginbfchar\s*(.*?)\s*endbfchar/s', $decoded, $mBfc)) {
+                    foreach ($mBfc[1] as $blockBfc) {
+                        if (@preg_match_all('/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/', $blockBfc, $mPairs, PREG_SET_ORDER)) {
+                            foreach ($mPairs as $pair) {
+                                $srcHex = strtoupper($pair[1]);
+                                $dstHex = $pair[2];
+                                if (strlen($dstHex) % 4 === 0 && function_exists('mb_convert_encoding')) {
+                                    $cmapHexToUtf8[$srcHex] = @mb_convert_encoding(@ pack('H*', $dstHex), 'UTF-8', 'UTF-16BE');
+                                }
+                            }
                         }
                     }
+                }
+                if (@preg_match_all('/beginbfrange\s*(.*?)\s*endbfrange/s', $decoded, $mBfr)) {
+                    foreach ($mBfr[1] as $blockBfr) {
+                        if (@preg_match_all('/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/', $blockBfr, $mRanges, PREG_SET_ORDER)) {
+                            foreach ($mRanges as $rng) {
+                                $startCode = hexdec($rng[1]);
+                                $endCode = hexdec($rng[2]);
+                                $targetCode = hexdec($rng[3]);
+                                $padLen = strlen($rng[1]);
+                                if ($endCode >= $startCode && ($endCode - $startCode) <= 256) {
+                                    for ($c = $startCode; $c <= $endCode; $c++) {
+                                        $kHex = strtoupper(str_pad(dechex($c), $padLen, '0', STR_PAD_LEFT));
+                                        $uCode = $targetCode + ($c - $startCode);
+                                        $uHex = str_pad(dechex($uCode), 4, '0', STR_PAD_LEFT);
+                                        if (function_exists('mb_convert_encoding')) {
+                                            $cmapHexToUtf8[$kHex] = @mb_convert_encoding(@pack('H*', $uHex), 'UTF-8', 'UTF-16BE');
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Solo conservar streams que contengan bloques de texto PDF `BT ... ET` y operadores `TJ` o `Tj`
+            if (strpos($decoded, 'BT') !== false && strpos($decoded, 'ET') !== false && (strpos($decoded, 'TJ') !== false || strpos($decoded, 'Tj') !== false)) {
+                $streamsContenido[] = $decoded;
+            }
+        }
+
+        // Procesar los streams de contenido de página extrayendo texto dentro de `BT ... ET`
+        $lineasLimpias = [];
+        $caracteresAcumulados = 0;
+
+        foreach ($streamsContenido as $contentStream) {
+            if (!@preg_match_all('/\bBT\b(.*?)\bET\b/s', $contentStream, $mBtBlocks)) {
+                continue;
+            }
+            foreach ($mBtBlocks[1] as $btBlock) {
+                $lineaActual = '';
+                // Tokenizar operaciones dentro de BT..ET: arreglos `[...] TJ`, literales `(...) Tj`, hex `<...> Tj`, y saltos de línea `Td`/`TD`/`Tm`/`T*`
+                if (@preg_match_all('/\[([^\[\]]*)\]\s*TJ|\(([^()\\\\]*(?:\\\\.[^()\\\\]*)*)\)\s*(?:Tj|\'|")|<([0-9A-Fa-f\s]+)>\s*Tj|(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+T[dD]\b|\bT\*\b|\bTm\b/s', $btBlock, $mOps, PREG_SET_ORDER)) {
+                    foreach ($mOps as $op) {
+                        $tokenFull = $op[0];
+                        // Caso 1: Arreglo de kerning `[...] TJ` (muy usado por Microsoft Word al exportar a PDF con Calibri/Arial)
+                        if ( isset($op[1]) && $op[1] !== '' ) {
+                            $arrBody = $op[1];
+                            if (@preg_match_all('/\(([^()\\\\]*(?:\\\\.[^()\\\\]*)*)\)|<([0-9A-Fa-f\s]+)>|(-?\d+(?:\.\d+)?)/s', $arrBody, $mArrItems, PREG_SET_ORDER)) {
+                                foreach ($mArrItems as $item) {
+                                    if (isset($item[1]) && $item[0][0] === '(') {
+                                        // Concatenar directamente (incluyendo literales de 1 solo carácter como `(S)`, `(d)`, `(a)`, `(6)`)
+                                        $lineaActual .= decodificarLiteralPdf($item[1]);
+                                    } elseif (isset($item[2]) && $item[2] !== '') {
+                                        $hexStr = preg_replace('/\s+/', '', strtoupper($item[2]));
+                                        if (!empty($cmapHexToUtf8)) {
+                                            $step = isset($cmapHexToUtf8[substr($hexStr, 0, 4)]) ? 4 : 2;
+                                            for ($h = 0; $h < strlen($hexStr); $h += $step) {
+                                                $codeH = substr($hexStr, $h, $step);
+                                                if (isset($cmapHexToUtf8[$codeH])) {
+                                                    $lineaActual .= $cmapHexToUtf8[$codeH];
+                                                }
+                                            }
+                                        }
+                                    } elseif (isset($item[3]) && $item[3] !== '') {
+                                        // En PDF `TJ`, un desplazamiento negativo grande (<= -100 milésimas de em) representa un espacio entre palabras;
+                                        // valores pequeños como `1`, `-1`, `-3`, `5` son micro-ajustes de kerning dentro de la misma palabra.
+                                        $kernVal = (float)$item[3];
+                                        if ($kernVal <= -100.0) {
+                                            if ($lineaActual !== '' && substr($lineaActual, -1) !== ' ') {
+                                                $lineaActual .= ' ';
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Caso 2: Literal simple `(...) Tj`
+                        elseif (isset($op[2]) && $tokenFull[0] === '(') {
+                            $lineaActual .= decodificarLiteralPdf($op[2]);
+                        }
+                        // Caso 3: Hex simple `<...> Tj`
+                        elseif (isset($op[3]) && $op[3] !== '') {
+                            $hexStr = preg_replace('/\s+/', '', strtoupper($op[3]));
+                            if (!empty($cmapHexToUtf8)) {
+                                $step = isset($cmapHexToUtf8[substr($hexStr, 0, 4)]) ? 4 : 2;
+                                for ($h = 0; $h < strlen($hexStr); $h += $step) {
+                                    $codeH = substr($hexStr, $h, $step);
+                                    if (isset($cmapHexToUtf8[$codeH])) {
+                                        $lineaActual .= $cmapHexToUtf8[$codeH];
+                                    }
+                                }
+                            }
+                        }
+                        // Caso 4: Operadores de cambio de posición vertical `Td`, `TD`, `T*`, `Tm`
+                        else {
+                            $esSaltoLinea = ($tokenFull === 'T*' || $tokenFull === 'Tm');
+                            if (!$esSaltoLinea && isset($op[5]) && $op[5] !== '') {
+                                $dy = abs((float)$op[5]);
+                                if ($dy > 1.5) {
+                                    $esSaltoLinea = true;
+                                } elseif (isset($op[4]) && (float)$op[4] > 10.0 && $lineaActual !== '' && substr($lineaActual, -1) !== ' ') {
+                                    $lineaActual .= ' ';
+                                }
+                            }
+                            if ($esSaltoLinea && trim($lineaActual) !== '') {
+                                $cand = limpiarTextoUtf8Seguro(preg_replace('/[ \t]+/u', ' ', $lineaActual));
+                                if (esLineaLegibleHumana($cand)) {
+                                    $lineasLimpias[] = $cand;
+                                    $caracteresAcumulados += strlen($cand);
+                                }
+                                $lineaActual = '';
+                            }
+                        }
+                    }
+                }
+                if (trim($lineaActual) !== '') {
+                    $cand = limpiarTextoUtf8Seguro(preg_replace('/[ \t]+/u', ' ', $lineaActual));
+                    if (esLineaLegibleHumana($cand)) {
+                        $lineasLimpias[] = $cand;
+                        $caracteresAcumulados += strlen($cand);
+                    }
+                }
+                if ($caracteresAcumulados >= 14000) {
+                    break 2;
                 }
             }
         }
 
-        if (!empty($fragmentos)) {
-            $textoPdf = implode(' ', $fragmentos);
-            $textoPdf = limpiarTextoUtf8Seguro($textoPdf);
-            $textoPdf = trim((string)preg_replace('/\s+/u', ' ', $textoPdf));
-            return mb_substr($textoPdf, 0, 12000, 'UTF-8');
+        if (!empty($lineasLimpias)) {
+            // Eliminar líneas consecutivas idénticas (p. ej. encabezados/pies repetidos)
+            $lineasUnicas = [];
+            $prevL = null;
+            foreach ($lineasLimpias as $lin) {
+                if ($lin !== $prevL) {
+                    $lineasUnicas[] = $lin;
+                    $prevL = $lin;
+                }
+            }
+            $textoPdf = implode("\n", $lineasUnicas);
+            return mb_substr(trim($textoPdf), 0, 12000, 'UTF-8');
         }
     }
 
@@ -2446,12 +2694,10 @@ function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $f
                         $infoArchivoPrincipal['mime_type'] = $mimeReal;
                         $infoArchivoPrincipal['texto_extraido_local'] = extraerTextoDeArchivoBinario($binContent, $mimeReal, $nomArchivo);
 
-                        // Si el archivo es soportado por Gemini inline y cabe en el presupuesto de 4 MB
-                        // (o si no pudimos extraer suficiente texto digital en PHP porque es un PDF escaneado/imagen)
-                        $textoLocalLen = mb_strlen($infoArchivoPrincipal['texto_extraido_local'], 'UTF-8');
+                        // Si el archivo es soportado por Gemini inline y cabe en el presupuesto de 4 MB,
+                        // lo adjuntamos como inline_data para lectura multimodal directa además del texto extraído limpio
                         $debeEnviarInline = in_array($mimeReal, $mimesSoportadosGeminiInline, true)
-                            && (($bytesInlineAcumulados + $lenBin) <= $maxBytesInlineTotal)
-                            && ($textoLocalLen < 600 || $lenBin <= (1536 * 1024));
+                            && (($bytesInlineAcumulados + $lenBin) <= $maxBytesInlineTotal);
 
                         if ($debeEnviarInline) {
                             $inlinePartsOut[] = [
@@ -2712,7 +2958,7 @@ function extraerJsonDeTexto($texto) {
 // Helper para llamar a Gemini con resolución IPv4 forzada, soporte multimodal (`inline_data`) y fallback rápido sin agotar el timeout HTTP del servidor
 function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 20, $inlineParts = []) {
     $primaryModel = defined('GEMINI_MODEL') ? GEMINI_MODEL : 'gemini-flash-latest';
-    $modelsToTry = array_values(array_unique([$primaryModel, 'gemini-2.0-flash']));
+    $modelsToTry = array_values(array_unique([$primaryModel, 'gemini-2.0-flash', 'gemini-1.5-flash']));
     $lastError = 'Error desconocido al conectar con Gemini';
 
     $parts = [['text' => limpiarTextoUtf8Seguro($prompt)]];
@@ -2793,17 +3039,29 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 20, $in
         }
 
         $resObj = json_decode($response, true);
-        if (isset($resObj['candidates'][0]['content']['parts'][0]['text'])) {
-            $usage = $resObj['usageMetadata'] ?? [];
-            return [
-                'text' => $resObj['candidates'][0]['content']['parts'][0]['text'],
-                'model_used' => $model,
-                'usage' => [
-                    'prompt_tokens'     => (int)($usage['promptTokenCount'] ?? 0),
-                    'completion_tokens' => (int)($usage['candidatesTokenCount'] ?? 0),
-                    'total_tokens'      => (int)($usage['totalTokenCount'] ?? 0)
-                ]
-            ];
+        if (!empty($resObj['candidates'][0]['content']['parts']) && is_array($resObj['candidates'][0]['content']['parts'])) {
+            $textParts = [];
+            foreach ($resObj['candidates'][0]['content']['parts'] as $candPart) {
+                if (!empty($candPart['thought'])) {
+                    continue;
+                }
+                if (isset($candPart['text']) && is_string($candPart['text'])) {
+                    $textParts[] = $candPart['text'];
+                }
+            }
+            $joinedText = trim(implode("\n", $textParts));
+            if ($joinedText !== '') {
+                $usage = $resObj['usageMetadata'] ?? [];
+                return [
+                    'text' => $joinedText,
+                    'model_used' => $model,
+                    'usage' => [
+                        'prompt_tokens'     => (int)($usage['promptTokenCount'] ?? 0),
+                        'completion_tokens' => (int)($usage['candidatesTokenCount'] ?? 0),
+                        'total_tokens'      => (int)($usage['totalTokenCount'] ?? 0)
+                    ]
+                ];
+            }
         }
         $lastError = 'Respuesta no válida de Gemini. API Response: ' . $response;
     }
@@ -2880,8 +3138,11 @@ function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsul
             }
 
             if (!empty($ap['texto_extraido_local'])) {
-                $extracto = mb_substr($ap['texto_extraido_local'], 0, 1800, 'UTF-8');
-                $md .= "\n**Contenido extraído del archivo del documento:**\n> " . str_replace("\n", "\n> ", $extracto) . "\n";
+                $lineasExt = array_values(array_filter(array_map('trim', explode("\n", (string)$ap['texto_extraido_local'])), 'esLineaLegibleHumana'));
+                if (!empty($lineasExt)) {
+                    $extracto = mb_substr(implode("\n", $lineasExt), 0, 2500, 'UTF-8');
+                    $md .= "\n**Contenido extraído del archivo del documento:**\n> " . str_replace("\n", "\n> ", $extracto) . "\n";
+                }
             }
 
             $md .= "\n##### 2. Ficha Técnica y Participantes\n";
