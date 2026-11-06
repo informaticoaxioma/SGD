@@ -1,6 +1,9 @@
 <?php
-header('Content-Type: application/json; charset=utf-8');
+@ini_set('display_errors', '0');
+@ini_set('memory_limit', '512M');
 @set_time_limit(120);
+ob_start();
+header('Content-Type: application/json; charset=utf-8');
 
 require_once '../../data/config_ai.php';
 require_once '../../data/Conexion.php';
@@ -385,13 +388,11 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
         }
 
         // Si el código incluye prefijos con ":", "N°", "Nº", "Nro" o espacios (ej. "ORD.IF : N°1348/2026"),
-        // extraer también el código numérico/barra final (ej. "1348/2026" y "N°1348/2026")
+        // extraer también el código numérico/barra final (ej. "1348/2026")
         if (preg_match('/([0-9]+\/[0-9]{2,4})\b/u', $docNumRaw, $mShortSlash)) {
             $shortSlash = trim($mShortSlash[1]);
-            foreach ([$shortSlash, 'N°' . $shortSlash, 'N° ' . $shortSlash] as $candVar) {
-                if (!in_array($candVar, $variantesNum, true)) {
-                    $variantesNum[] = $candVar;
-                }
+            if (!in_array($shortSlash, $variantesNum, true)) {
+                $variantesNum[] = $shortSlash;
             }
         }
 
@@ -406,13 +407,15 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
             $types .= "ssss";
         }
 
-        // Comparación adicional normalizada sin espacios, dos puntos ni símbolo de grado (ej. "ORD.IF : N°1348/2026" == "ORD.IF: N° 1348/2026")
-        $docNumCompacto = preg_replace('/[\s:°º]+/u', '', $docNumRaw);
-        if ($docNumCompacto !== '' && mb_strlen($docNumCompacto) >= 3) {
-            $colNormSql = "REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(dd.num_documento USING utf8) COLLATE utf8_general_ci, ' ', ''), ':', ''), '°', ''), 'º', '')";
-            $orNumParts[] = "({$colNormSql} LIKE CONVERT(? USING utf8) COLLATE utf8_general_ci)";
-            $params[] = "%" . $docNumCompacto . "%";
-            $types .= "s";
+        // Comparación adicional normalizada sin espacios, dos puntos ni símbolo de grado solo cuando el código consultado los contiene (ej. "ORD.IF : N°1348/2026")
+        if (preg_match('/[\s:°º]/u', $docNumRaw)) {
+            $docNumCompacto = preg_replace('/[\s:°º]+/u', '', $docNumRaw);
+            if ($docNumCompacto !== '' && mb_strlen($docNumCompacto) >= 3) {
+                $colNormSql = "REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(dd.num_documento USING utf8) COLLATE utf8_general_ci, ' ', ''), ':', ''), '°', ''), 'º', '')";
+                $orNumParts[] = "({$colNormSql} LIKE CONVERT(? USING utf8) COLLATE utf8_general_ci)";
+                $params[] = "%" . $docNumCompacto . "%";
+                $types .= "s";
+            }
         }
 
         $where .= " AND (" . implode(" OR ", $orNumParts) . ")";
@@ -2134,8 +2137,30 @@ function formatearTamanoArchivo($bytes) {
 }
 
 /**
+ * Garantiza que una cadena sea UTF-8 válida y libre de bytes de control no imprimibles,
+ * evitando que json_encode() o preg_replace('/.../u') fallen con datos binarios o latin1.
+ */
+function limpiarTextoUtf8Seguro($str) {
+    $s = (string)$str;
+    if ($s === '') {
+        return '';
+    }
+    if (!mb_check_encoding($s, 'UTF-8')) {
+        $s = @mb_convert_encoding($s, 'UTF-8', 'ISO-8859-1');
+    }
+    if (function_exists('iconv')) {
+        $ic = @iconv('UTF-8', 'UTF-8//IGNORE', $s);
+        if (is_string($ic)) {
+            $s = $ic;
+        }
+    }
+    $sClean = @preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', ' ', $s);
+    return is_string($sClean) ? trim($sClean) : '';
+}
+
+/**
  * Extrae texto legible en PHP desde un archivo binario (PDF digital, DOCX, XLSX, TXT, CSV, HTML)
- * como complemento/respaldo al análisis multimodal directo de Gemini (`inline_data`).
+ * sin usar expresiones regulares con backtracking profundo para evitar agotar el JIT stack o la memoria.
  */
 function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') {
     $len = strlen((string)$binario);
@@ -2147,13 +2172,13 @@ function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') 
 
     // 1. Archivos de texto plano, CSV, HTML o XML
     if (in_array($mimeReal, ['text/plain', 'text/csv', 'text/html', 'text/xml', 'application/xml'], true) || in_array($ext, ['txt', 'csv', 'html', 'htm', 'xml'], true)) {
-        $txt = (string)$binario;
+        $txt = substr((string)$binario, 0, 200000);
         if (in_array($mimeReal, ['text/html', 'text/xml', 'application/xml'], true) || in_array($ext, ['html', 'htm', 'xml'], true)) {
             $txt = strip_tags($txt);
         }
-        $txt = @mb_convert_encoding($txt, 'UTF-8', 'UTF-8, ISO-8859-1, Windows-1252');
-        $txt = trim(preg_replace('/\s+/u', ' ', (string)$txt));
-        return mb_substr($txt, 0, 14000, 'UTF-8');
+        $txt = limpiarTextoUtf8Seguro($txt);
+        $txt = preg_replace('/\s+/u', ' ', $txt);
+        return mb_substr(trim((string)$txt), 0, 12000, 'UTF-8');
     }
 
     // 2. Archivos Word (.docx) o Excel (.xlsx) basados en contenedor ZIP/XML
@@ -2164,7 +2189,7 @@ function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') 
             @file_put_contents($tmpFile, $binario);
             $zip = new ZipArchive();
             $extraido = '';
-            if ($zip->open($tmpFile) === true) {
+            if (@$zip->open($tmpFile) === true) {
                 if ($ext === 'docx' || strpos($mimeReal, 'wordprocessingml') !== false) {
                     $xmlDoc = $zip->getFromName('word/document.xml');
                     if ($xmlDoc !== false) {
@@ -2184,7 +2209,7 @@ function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') 
                     $sheetXml = $zip->getFromName('xl/worksheets/sheet1.xml');
                     if ($sheetXml !== false && preg_match_all('/<row[^>]*>(.*?)<\/row>/s', $sheetXml, $mRows)) {
                         $lineasXls = [];
-                        foreach (array_slice($mRows[1], 0, 250) as $rowBlock) {
+                        foreach (array_slice($mRows[1], 0, 200) as $rowBlock) {
                             $celdasFila = [];
                             if (preg_match_all('/<c([^>]*)>(.*?)<\/c>/s', $rowBlock, $mCells, PREG_SET_ORDER)) {
                                 foreach ($mCells as $cellMatch) {
@@ -2209,47 +2234,93 @@ function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') 
                 $zip->close();
             }
             @unlink($tmpFile);
-            $extraido = trim(preg_replace('/[ \t]+/u', ' ', $extraido));
-            return mb_substr($extraido, 0, 14000, 'UTF-8');
+            $extraido = limpiarTextoUtf8Seguro($extraido);
+            $extraido = trim((string)preg_replace('/[ \t]+/u', ' ', $extraido));
+            return mb_substr($extraido, 0, 12000, 'UTF-8');
         }
     }
 
-    // 3. Archivos PDF: descompresión de streams FlateDecode y extracción de cadenas de texto
+    // 3. Archivos PDF: escaneo rápido con strpos() sin backtracking PCRE y regex desenrollada segura para JIT
     if ($mimeReal === 'application/pdf' || strncmp(substr((string)$binario, 0, 5), '%PDF-', 5) === 0) {
         $fragmentos = [];
-        if (preg_match_all('/stream[\r\n]+(.*?)[\r\n]+endstream/s', (string)$binario, $mStreams)) {
-            foreach (array_slice($mStreams[1], 0, 120) as $rawStream) {
-                $decoded = @gzuncompress($rawStream);
-                if ($decoded === false) {
-                    $decoded = @gzinflate($rawStream);
+        $maxScanLen = min($len, 5 * 1024 * 1024); // Escanear hasta los primeros 5 MB
+        $offset = 0;
+        $streamsProcesados = 0;
+        $caracteresAcumulados = 0;
+
+        while ($offset < $maxScanLen && $streamsProcesados < 70 && $caracteresAcumulados < 14000) {
+            $posStream = strpos($binario, 'stream', $offset);
+            if ($posStream === false || $posStream >= $maxScanLen) {
+                break;
+            }
+            // Verificar que no sea la palabra 'endstream'
+            if ($posStream >= 3 && substr($binario, $posStream - 3, 3) === 'end') {
+                $offset = $posStream + 6;
+                continue;
+            }
+            $startData = $posStream + 6;
+            if ($startData < $len && $binario[$startData] === "\r") {
+                $startData++;
+            }
+            if ($startData < $len && $binario[$startData] === "\n") {
+                $startData++;
+            }
+
+            $posEnd = strpos($binario, 'endstream', $startData);
+            if ($posEnd === false) {
+                break;
+            }
+            $offset = $posEnd + 9;
+            $streamLen = $posEnd - $startData;
+
+            // Omitir streams vacíos o mayores a 350 KB (que corresponden a imágenes embebidas o fuentes pesadas)
+            if ($streamLen <= 0 || $streamLen > 358400) {
+                continue;
+            }
+
+            $rawStream = trim(substr($binario, $startData, $streamLen), "\r\n");
+            $streamsProcesados++;
+
+            $decoded = @gzuncompress($rawStream);
+            if ($decoded === false) {
+                $decoded = @gzinflate($rawStream);
+            }
+            if ($decoded === false || !is_string($decoded) || $decoded === '') {
+                if (strpos($rawStream, 'Tj') !== false || strpos($rawStream, 'TJ') !== false) {
+                    $decoded = $rawStream;
+                } else {
+                    continue;
                 }
-                if ($decoded === false || !is_string($decoded) || $decoded === '') {
-                    // Si el stream no estaba comprimido pero contiene operadores de texto PDF
-                    if (strpos($rawStream, 'Tj') !== false || strpos($rawStream, 'TJ') !== false) {
-                        $decoded = $rawStream;
-                    } else {
+            }
+
+            // Omitir streams descomprimidos gigantes o sin operadores de texto PDF
+            if (strlen($decoded) > 524288 || (strpos($decoded, '(') === false && strpos($decoded, '<') === false)) {
+                continue;
+            }
+
+            // Patrón desenrollado que NUNCA agota el JIT stack de PCRE
+            if (@preg_match_all('/\(([^()\\\\]*(?:\\\\.[^()\\\\]*)*)\)/s', $decoded, $mParen)) {
+                foreach ($mParen[1] as $strP) {
+                    if (strlen($strP) > 2000) {
                         continue;
                     }
-                }
-
-                // Extraer cadenas entre paréntesis (...) asociadas a bloques de texto PDF
-                if (preg_match_all('/\(((?:\\\\.|[^\\\\()])+)\)\s*(?:Tj|\'|"|(?:\-?\d+(?:\.\d+)?\s*)?)/s', $decoded, $mParen)) {
-                    foreach ($mParen[1] as $strP) {
-                        $strP = strtr($strP, [
-                            '\\(' => '(',
-                            '\\)' => ')',
-                            '\\\\' => '\\',
-                            '\\n' => "\n",
-                            '\\r' => ' ',
-                            '\\t' => ' '
-                        ]);
-                        $strP = preg_replace_callback('/\\\\([0-7]{1,3})/', function ($mOct) {
-                            return chr(octdec($mOct[1]));
-                        }, $strP);
-                        $strUtf = @mb_convert_encoding($strP, 'UTF-8', 'UTF-8, ISO-8859-1, Windows-1252');
-                        $strUtf = preg_replace('/[^\P{C}\n\t]/u', '', (string)$strUtf);
-                        if (trim($strUtf) !== '' && preg_match('/[\p{L}\p{N}]{2,}/u', $strUtf)) {
-                            $fragmentos[] = $strUtf;
+                    $strP = strtr($strP, [
+                        '\\(' => '(',
+                        '\\)' => ')',
+                        '\\\\' => '\\',
+                        '\\n' => "\n",
+                        '\\r' => ' ',
+                        '\\t' => ' '
+                    ]);
+                    $strP = preg_replace_callback('/\\\\([0-7]{1,3})/', function ($mOct) {
+                        return chr(octdec($mOct[1]));
+                    }, $strP);
+                    $strUtf = limpiarTextoUtf8Seguro($strP);
+                    if ($strUtf !== '' && @preg_match('/[\p{L}\p{N}]{2,}/u', $strUtf)) {
+                        $fragmentos[] = $strUtf;
+                        $caracteresAcumulados += strlen($strUtf);
+                        if ($caracteresAcumulados >= 14000) {
+                            break;
                         }
                     }
                 }
@@ -2258,8 +2329,9 @@ function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') 
 
         if (!empty($fragmentos)) {
             $textoPdf = implode(' ', $fragmentos);
-            $textoPdf = trim(preg_replace('/\s+/u', ' ', $textoPdf));
-            return mb_substr($textoPdf, 0, 14000, 'UTF-8');
+            $textoPdf = limpiarTextoUtf8Seguro($textoPdf);
+            $textoPdf = trim((string)preg_replace('/\s+/u', ' ', $textoPdf));
+            return mb_substr($textoPdf, 0, 12000, 'UTF-8');
         }
     }
 
@@ -2267,12 +2339,11 @@ function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') 
 }
 
 /**
- * Accede al documento solicitado y a TODOS sus archivos asociados en la base de datos:
- * 1. El archivo principal cargado en la tabla `documento` (`d.nombre_documento`, `d.mime_documento`, `d.documento`).
- * 2. Todos los archivos adjuntos asociados en la tabla `adjunto` (`a.nombre_adjunto`, `a.mime_adjunto`, `a.archivo_adjunto`).
- * 3. Las anotaciones de `bitacora`, `accion`/`actividad` y el contexto de `seguimiento`.
- * Prepara tanto las partes multimodales (`inline_data` base64 para que Gemini lea directamente PDFs e imágenes,
- * incluidos documentos escaneados con OCR nativo) como el texto extraído localmente y metadatos completos.
+ * Accede al documento solicitado y a TODA su información y archivos asociados en la base de datos:
+ * 1. Metadatos completos de `documento` y `detalle_documento` (materia, antecedente, incluye, comentario, fechas, flujo, estado, remitente, destinatario, responsable, código de proceso).
+ * 2. El archivo principal cargado en la tabla `documento` (`d.nombre_documento`, `d.mime_documento`, `d.documento`).
+ * 3. Todos los archivos adjuntos asociados en la tabla `adjunto` (`a.nombre_adjunto`, `a.mime_adjunto`, `a.archivo_adjunto`).
+ * 4. El historial de respuestas en `bitacora`, las actividades en `accion`/`actividad` y los documentos relacionados en `seguimiento`.
  */
 function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = [], &$inlinePartsOut = []) {
     $inlinePartsOut = [];
@@ -2310,21 +2381,24 @@ function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $f
         'image/png',
         'image/webp'
     ];
-    $maxBytesInlineTotal = 14 * 1024 * 1024; // 14 MB máximo acumulado para envío inline a Gemini
+    // Límite seguro para envío inline base64 a Gemini sin provocar timeout HTTP del servidor web
+    $maxBytesInlineTotal = 4 * 1024 * 1024; // 4 MB máximo para inline_data multimodal
+    $maxBytesLecturaLocal = 10 * 1024 * 1024; // 10 MB máximo para lectura de BLOB en memoria PHP
     $bytesInlineAcumulados = 0;
 
-    // Si se buscó por un código específico de documento y el primero coincide, priorizamos analizar los primeros 2 resultados más relevantes
-    $maxDocsAnalizar = !empty($filters['doc_numero']) ? 2 : 3;
+    // Cuando el usuario consulta por un número de documento específico (ej. SCINC/IF/1001/2026),
+    // analizamos el documento principal coincidente (1) para responder rápido y con precisión sin mezclar otros documentos
+    $maxDocsAnalizar = (!empty($filters['doc_numero']) || !empty($filters['num_providencia'])) ? 1 : 2;
     $documentosAnalizados = [];
 
     foreach (array_slice($docsEncontrados, 0, $maxDocsAnalizar) as $idxDoc => $docMeta) {
         $idDoc = (int)$docMeta['id_documento'];
         $etiquetaDoc = trim(($docMeta['tipo_documento'] ?? 'Documento') . ' ' . ($docMeta['num_documento'] ?? ('ID ' . $idDoc)));
 
-        // 1. Obtener el archivo binario principal de la tabla `documento`
-        $rowsBinDoc = ejecutarSelect(
+        // 1. Consultar primero metadatos y tamaño real en bytes (`OCTET_LENGTH(documento)`) sin traer el LONGBLOB si es gigante
+        $rowsMetaBin = ejecutarSelect(
             $cnx,
-            "SELECT nombre_documento, mime_documento, tamano_documento, documento
+            "SELECT nombre_documento, mime_documento, tamano_documento, OCTET_LENGTH(documento) AS bytes_reales
              FROM documento
              WHERE id_documento = ?
              LIMIT 1",
@@ -2334,7 +2408,7 @@ function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $f
 
         $infoArchivoPrincipal = [
             'tiene_archivo_cargado' => false,
-            'nombre_archivo' => $docMeta['nombre_documento'] ?? '',
+            'nombre_archivo' => limpiarTextoUtf8Seguro($docMeta['nombre_documento'] ?? ''),
             'mime_type' => '',
             'tamano_bytes' => 0,
             'tamano_legible' => '0 B',
@@ -2343,42 +2417,65 @@ function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $f
             'url_descarga' => "negocio/descargarDocumento.php?idDocumento={$idDoc}"
         ];
 
-        if (is_array($rowsBinDoc) && !isset($rowsBinDoc['error']) && !empty($rowsBinDoc[0])) {
-            $rBin = $rowsBinDoc[0];
-            $binContent = (string)($rBin['documento'] ?? '');
-            $lenBin = strlen($binContent);
-            $nomArchivo = trim((string)($rBin['nombre_documento'] ?? ''));
-            $mimeReal = normalizarMimeArchivo($rBin['mime_documento'] ?? '', $nomArchivo, $binContent);
+        if (is_array($rowsMetaBin) && !isset($rowsMetaBin['error']) && !empty($rowsMetaBin[0])) {
+            $rMeta = $rowsMetaBin[0];
+            $bytesReales = (int)($rMeta['bytes_reales'] ?? 0);
+            $nomArchivo = limpiarTextoUtf8Seguro($rMeta['nombre_documento'] ?? '');
+            $dbMimeDoc = trim((string)($rMeta['mime_documento'] ?? ''));
+            $tamReportado = $bytesReales > 0 ? $bytesReales : (int)($rMeta['tamano_documento'] ?? 0);
 
             $infoArchivoPrincipal['nombre_archivo'] = $nomArchivo;
-            $infoArchivoPrincipal['mime_type'] = $mimeReal;
-            $infoArchivoPrincipal['tamano_bytes'] = $lenBin > 0 ? $lenBin : (int)($rBin['tamano_documento'] ?? 0);
-            $infoArchivoPrincipal['tamano_legible'] = formatearTamanoArchivo($infoArchivoPrincipal['tamano_bytes']);
+            $infoArchivoPrincipal['mime_type'] = normalizarMimeArchivo($dbMimeDoc, $nomArchivo, '');
+            $infoArchivoPrincipal['tamano_bytes'] = $tamReportado;
+            $infoArchivoPrincipal['tamano_legible'] = formatearTamanoArchivo($tamReportado);
 
-            if ($lenBin > 0) {
+            if ($bytesReales > 0) {
                 $infoArchivoPrincipal['tiene_archivo_cargado'] = true;
-                $infoArchivoPrincipal['texto_extraido_local'] = extraerTextoDeArchivoBinario($binContent, $mimeReal, $nomArchivo);
 
-                if (in_array($mimeReal, $mimesSoportadosGeminiInline, true) && ($bytesInlineAcumulados + $lenBin) <= $maxBytesInlineTotal) {
-                    $inlinePartsOut[] = [
-                        'text' => "=== ARCHIVO PRINCIPAL DEL DOCUMENTO ({$etiquetaDoc} | ID: {$idDoc} | Nombre de archivo: {$nomArchivo}) ==="
-                    ];
-                    $inlinePartsOut[] = [
-                        'inline_data' => [
-                            'mime_type' => $mimeReal,
-                            'data' => base64_encode($binContent)
-                        ]
-                    ];
-                    $bytesInlineAcumulados += $lenBin;
-                    $infoArchivoPrincipal['enviado_a_ia_multimodal'] = true;
+                if ($bytesReales <= $maxBytesLecturaLocal) {
+                    $rowsBinDoc = ejecutarSelect(
+                        $cnx,
+                        "SELECT documento FROM documento WHERE id_documento = ? LIMIT 1",
+                        [$idDoc],
+                        "i"
+                    );
+                    if (is_array($rowsBinDoc) && !isset($rowsBinDoc['error']) && !empty($rowsBinDoc[0]['documento'])) {
+                        $binContent = (string)$rowsBinDoc[0]['documento'];
+                        $lenBin = strlen($binContent);
+                        $mimeReal = normalizarMimeArchivo($dbMimeDoc, $nomArchivo, $binContent);
+                        $infoArchivoPrincipal['mime_type'] = $mimeReal;
+                        $infoArchivoPrincipal['texto_extraido_local'] = extraerTextoDeArchivoBinario($binContent, $mimeReal, $nomArchivo);
+
+                        // Si el archivo es soportado por Gemini inline y cabe en el presupuesto de 4 MB
+                        // (o si no pudimos extraer suficiente texto digital en PHP porque es un PDF escaneado/imagen)
+                        $textoLocalLen = mb_strlen($infoArchivoPrincipal['texto_extraido_local'], 'UTF-8');
+                        $debeEnviarInline = in_array($mimeReal, $mimesSoportadosGeminiInline, true)
+                            && (($bytesInlineAcumulados + $lenBin) <= $maxBytesInlineTotal)
+                            && ($textoLocalLen < 600 || $lenBin <= (1536 * 1024));
+
+                        if ($debeEnviarInline) {
+                            $inlinePartsOut[] = [
+                                'text' => "=== ARCHIVO PRINCIPAL DEL DOCUMENTO ({$etiquetaDoc} | ID: {$idDoc} | Nombre de archivo: {$nomArchivo}) ==="
+                            ];
+                            $inlinePartsOut[] = [
+                                'inline_data' => [
+                                    'mime_type' => $mimeReal,
+                                    'data' => base64_encode($binContent)
+                                ]
+                            ];
+                            $bytesInlineAcumulados += $lenBin;
+                            $infoArchivoPrincipal['enviado_a_ia_multimodal'] = true;
+                        }
+                        unset($binContent, $rowsBinDoc);
+                    }
                 }
             }
         }
 
-        // 2. Obtener todos los archivos adjuntos asociados al documento en la tabla `adjunto`
-        $rowsAdj = ejecutarSelect(
+        // 2. Obtener los archivos adjuntos asociados al documento en la tabla `adjunto` (verificando primero OCTET_LENGTH)
+        $rowsAdjMeta = ejecutarSelect(
             $cnx,
-            "SELECT id_adjunto, nombre_adjunto, mime_adjunto, tamano_adjunto, archivo_adjunto
+            "SELECT id_adjunto, nombre_adjunto, mime_adjunto, tamano_adjunto, OCTET_LENGTH(archivo_adjunto) AS bytes_reales
              FROM adjunto
              WHERE id_documento = ?
              ORDER BY id_adjunto ASC",
@@ -2387,14 +2484,14 @@ function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $f
         );
 
         $listaAdjuntos = [];
-        if (is_array($rowsAdj) && !isset($rowsAdj['error'])) {
-            foreach ($rowsAdj as $rAdj) {
+        if (is_array($rowsAdjMeta) && !isset($rowsAdjMeta['error'])) {
+            foreach ($rowsAdjMeta as $rAdj) {
                 $idAdj = (int)$rAdj['id_adjunto'];
-                $nomAdj = trim((string)($rAdj['nombre_adjunto'] ?? ('adjunto_' . $idAdj)));
-                $binAdj = (string)($rAdj['archivo_adjunto'] ?? '');
-                $lenAdj = strlen($binAdj);
-                $mimeAdj = normalizarMimeArchivo($rAdj['mime_adjunto'] ?? '', $nomAdj, $binAdj);
-                $tamAdjBytes = $lenAdj > 0 ? $lenAdj : (int)($rAdj['tamano_adjunto'] ?? 0);
+                $nomAdj = limpiarTextoUtf8Seguro($rAdj['nombre_adjunto'] ?? ('adjunto_' . $idAdj));
+                $bytesAdj = (int)($rAdj['bytes_reales'] ?? 0);
+                $dbMimeAdj = trim((string)($rAdj['mime_adjunto'] ?? ''));
+                $mimeAdj = normalizarMimeArchivo($dbMimeAdj, $nomAdj, '');
+                $tamAdjBytes = $bytesAdj > 0 ? $bytesAdj : (int)($rAdj['tamano_adjunto'] ?? 0);
 
                 $itemAdj = [
                     'id_adjunto' => $idAdj,
@@ -2402,26 +2499,41 @@ function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $f
                     'mime_type' => $mimeAdj,
                     'tamano_bytes' => $tamAdjBytes,
                     'tamano_legible' => formatearTamanoArchivo($tamAdjBytes),
-                    'tiene_contenido' => ($lenAdj > 0),
+                    'tiene_contenido' => ($bytesAdj > 0),
                     'enviado_a_ia_multimodal' => false,
                     'texto_extraido_local' => '',
                     'url_descarga' => "negocio/descargarDocumento.php?idAdjunto={$idAdj}"
                 ];
 
-                if ($lenAdj > 0) {
-                    $itemAdj['texto_extraido_local'] = extraerTextoDeArchivoBinario($binAdj, $mimeAdj, $nomAdj);
-                    if (in_array($mimeAdj, $mimesSoportadosGeminiInline, true) && ($bytesInlineAcumulados + $lenAdj) <= $maxBytesInlineTotal) {
-                        $inlinePartsOut[] = [
-                            'text' => "=== ARCHIVO ADJUNTO ASOCIADO AL DOCUMENTO ({$etiquetaDoc} | Adjunto ID: {$idAdj} | Nombre: {$nomAdj}) ==="
-                        ];
-                        $inlinePartsOut[] = [
-                            'inline_data' => [
-                                'mime_type' => $mimeAdj,
-                                'data' => base64_encode($binAdj)
-                            ]
-                        ];
-                        $bytesInlineAcumulados += $lenAdj;
-                        $itemAdj['enviado_a_ia_multimodal'] = true;
+                if ($bytesAdj > 0 && $bytesAdj <= (6 * 1024 * 1024)) {
+                    $rowsAdjBin = ejecutarSelect(
+                        $cnx,
+                        "SELECT archivo_adjunto FROM adjunto WHERE id_adjunto = ? LIMIT 1",
+                        [$idAdj],
+                        "i"
+                    );
+                    if (is_array($rowsAdjBin) && !isset($rowsAdjBin['error']) && !empty($rowsAdjBin[0]['archivo_adjunto'])) {
+                        $binAdj = (string)$rowsAdjBin[0]['archivo_adjunto'];
+                        $lenAdj = strlen($binAdj);
+                        $mimeAdj = normalizarMimeArchivo($dbMimeAdj, $nomAdj, $binAdj);
+                        $itemAdj['mime_type'] = $mimeAdj;
+                        $itemAdj['texto_extraido_local'] = extraerTextoDeArchivoBinario($binAdj, $mimeAdj, $nomAdj);
+
+                        $textoAdjLen = mb_strlen($itemAdj['texto_extraido_local'], 'UTF-8');
+                        if (in_array($mimeAdj, $mimesSoportadosGeminiInline, true) && ($bytesInlineAcumulados + $lenAdj) <= $maxBytesInlineTotal && ($textoAdjLen < 600 || $lenAdj <= (1024 * 1024))) {
+                            $inlinePartsOut[] = [
+                                'text' => "=== ARCHIVO ADJUNTO ASOCIADO AL DOCUMENTO ({$etiquetaDoc} | Adjunto ID: {$idAdj} | Nombre: {$nomAdj}) ==="
+                            ];
+                            $inlinePartsOut[] = [
+                                'inline_data' => [
+                                    'mime_type' => $mimeAdj,
+                                    'data' => base64_encode($binAdj)
+                                ]
+                            ];
+                            $bytesInlineAcumulados += $lenAdj;
+                            $itemAdj['enviado_a_ia_multimodal'] = true;
+                        }
+                        unset($binAdj, $rowsAdjBin);
                     }
                 }
 
@@ -2443,10 +2555,10 @@ function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $f
         if (is_array($rowsBit) && !isset($rowsBit['error'])) {
             foreach ($rowsBit as $rb) {
                 $listaBitacora[] = [
-                    'emisor' => trim((string)($rb['emisor'] ?? '')),
-                    'fecha_emision' => trim((string)($rb['fecha_emision'] ?? '')),
-                    'asunto' => trim((string)($rb['asunto'] ?? '')),
-                    'detalle_respuesta' => trim((string)($rb['detalle_respuesta'] ?? ''))
+                    'emisor' => limpiarTextoUtf8Seguro($rb['emisor'] ?? ''),
+                    'fecha_emision' => limpiarTextoUtf8Seguro($rb['fecha_emision'] ?? ''),
+                    'asunto' => limpiarTextoUtf8Seguro($rb['asunto'] ?? ''),
+                    'detalle_respuesta' => limpiarTextoUtf8Seguro($rb['detalle_respuesta'] ?? '')
                 ];
             }
         }
@@ -2464,10 +2576,47 @@ function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $f
         $listaAcciones = [];
         if (is_array($rowsAcc) && !isset($rowsAcc['error'])) {
             foreach ($rowsAcc as $rac) {
-                $nomAct = trim((string)($rac['actividad'] ?? ''));
+                $nomAct = limpiarTextoUtf8Seguro($rac['actividad'] ?? '');
                 if ($nomAct !== '' && !in_array($nomAct, $listaAcciones, true)) {
                     $listaAcciones[] = $nomAct;
                 }
+            }
+        }
+
+        // 5. Obtener documentos relacionados vinculados en `seguimiento` para enriquecer el contexto del documento
+        $rowsSeg = ejecutarSelect(
+            $cnx,
+            "SELECT DISTINCT d2.id_documento, td2.tipo_documento, dd2.num_documento, dd2.materia, d2.fecha_documento,
+                    CASE WHEN d2.id_estado_doc = 1 THEN 'Pendiente' WHEN d2.id_estado_doc = 2 THEN 'Cerrado' ELSE 'Otro' END AS estado_documento
+             FROM seguimiento s1
+             INNER JOIN seguimiento s2 ON s1.numero_seguimiento = s2.numero_seguimiento
+             INNER JOIN documento d2 ON s2.id_documento = d2.id_documento
+             INNER JOIN detalle_documento dd2 ON d2.id_documento = dd2.id_documento
+             LEFT JOIN tipo_documento td2 ON dd2.id_tipo_doc = td2.id_tipo_doc
+             WHERE s1.id_documento = ? AND s1.numero_seguimiento <> 0 AND s2.id_documento <> ?
+             ORDER BY d2.fecha_documento DESC
+             LIMIT 15",
+            [$idDoc, $idDoc],
+            "ii"
+        );
+        $listaRelacionadosSeg = [];
+        if (is_array($rowsSeg) && !isset($rowsSeg['error'])) {
+            foreach ($rowsSeg as $rSeg) {
+                $listaRelacionadosSeg[] = [
+                    'id_documento' => (int)$rSeg['id_documento'],
+                    'tipo_documento' => limpiarTextoUtf8Seguro($rSeg['tipo_documento'] ?? ''),
+                    'num_documento' => limpiarTextoUtf8Seguro($rSeg['num_documento'] ?? ''),
+                    'materia' => limpiarTextoUtf8Seguro($rSeg['materia'] ?? ''),
+                    'fecha_documento' => limpiarTextoUtf8Seguro($rSeg['fecha_documento'] ?? ''),
+                    'estado_documento' => limpiarTextoUtf8Seguro($rSeg['estado_documento'] ?? '')
+                ];
+            }
+        }
+
+        // Asegurar que todos los campos de metadatos estén limpios en UTF-8
+        foreach ($docMeta as $kMeta => $vMeta) {
+            if (is_string($vMeta)) {
+                $docMeta[$kMeta] = limpiarTextoUtf8Seguro($vMeta);
             }
         }
 
@@ -2477,13 +2626,14 @@ function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $f
             'cantidad_archivos_adjuntos' => count($listaAdjuntos),
             'archivos_adjuntos' => $listaAdjuntos,
             'bitacora_respuestas' => $listaBitacora,
-            'acciones_requeridas' => $listaAcciones
+            'acciones_requeridas' => $listaAcciones,
+            'documentos_relacionados_seguimiento' => $listaRelacionadosSeg
         ];
     }
 
     return [
         'documento_encontrado' => true,
-        'criterio_buscado' => $filters['doc_numero'] ?? ($filters['num_providencia'] ?? ($filters['doc_nombre'] ?? '')),
+        'criterio_buscado' => limpiarTextoUtf8Seguro($filters['doc_numero'] ?? ($filters['num_providencia'] ?? ($filters['doc_nombre'] ?? ''))),
         'total_documentos_coincidentes' => count($docsEncontrados),
         'documentos_analizados' => $documentosAnalizados
     ];
@@ -2559,18 +2709,20 @@ function extraerJsonDeTexto($texto) {
     return null;
 }
 
-// Helper para llamar a Gemini con resolución IPv4 forzada, soporte multimodal (`inline_data`) y fallback automático de modelo ante timeout
-function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25, $inlineParts = []) {
+// Helper para llamar a Gemini con resolución IPv4 forzada, soporte multimodal (`inline_data`) y fallback rápido sin agotar el timeout HTTP del servidor
+function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 20, $inlineParts = []) {
     $primaryModel = defined('GEMINI_MODEL') ? GEMINI_MODEL : 'gemini-flash-latest';
-    $modelsToTry = array_values(array_unique([$primaryModel, 'gemini-2.0-flash', 'gemini-1.5-flash']));
+    $modelsToTry = array_values(array_unique([$primaryModel, 'gemini-2.0-flash']));
     $lastError = 'Error desconocido al conectar con Gemini';
 
-    $parts = [['text' => $prompt]];
+    $parts = [['text' => limpiarTextoUtf8Seguro($prompt)]];
     if (!empty($inlineParts) && is_array($inlineParts)) {
         foreach ($inlineParts as $ip) {
             $parts[] = $ip;
         }
     }
+
+    $jsonFlags = JSON_UNESCAPED_UNICODE | (defined('JSON_INVALID_UTF8_SUBSTITUTE') ? JSON_INVALID_UTF8_SUBSTITUTE : 0);
 
     foreach ($modelsToTry as $idx => $model) {
         $url = 'https://generativelanguage.googleapis.com/v1beta/models/' . $model . ':generateContent?key=' . $apiKey;
@@ -2590,15 +2742,23 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25, $in
             $data['generationConfig']['responseMimeType'] = 'application/json';
         }
 
+        $payloadJson = json_encode($data, $jsonFlags);
+        if ($payloadJson === false) {
+            if (!empty($inlineParts)) {
+                return llamarGemini($apiKey, $prompt, $jsonMode, 18, []);
+            }
+            return ['error' => 'Error al codificar payload JSON para Gemini'];
+        }
+
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_TIMEOUT, $idx === 0 ? $timeoutSec : max(20, (int)round($timeoutSec * 0.75)));
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
+        curl_setopt($ch, CURLOPT_TIMEOUT, $idx === 0 ? $timeoutSec : min(15, $timeoutSec));
         if (defined('CURL_IPRESOLVE_V4')) {
             curl_setopt($ch, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
         }
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payloadJson);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
             'Content-Type: application/json'
         ]);
@@ -2607,7 +2767,12 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25, $in
         if (curl_errno($ch)) {
             $lastError = curl_error($ch);
             curl_close($ch);
-            error_log("Advertencia Gemini ({$model}): {$lastError}. Probando siguiente modelo...");
+            error_log("Advertencia Gemini ({$model}): {$lastError}.");
+            // Si la petición incluía archivos pesados en inline_data y demoró/falló por red, reintentar de inmediato solo con el texto extraído y metadatos
+            if (!empty($inlineParts)) {
+                error_log("Reintentando Gemini sin inline_data (usando texto extraído local + metadatos BD)...");
+                return llamarGemini($apiKey, $prompt, $jsonMode, 16, []);
+            }
             continue;
         }
 
@@ -2616,9 +2781,9 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25, $in
 
         if ($httpCode !== 200) {
             $lastError = 'API returned HTTP code ' . $httpCode . '. Response: ' . $response;
-            if ($httpCode === 400 && !empty($inlineParts)) {
-                error_log("Advertencia HTTP 400 en Gemini con inline_data. Reintentando con texto extraído en PHP...");
-                return llamarGemini($apiKey, $prompt, $jsonMode, $timeoutSec, []);
+            if (!empty($inlineParts)) {
+                error_log("Advertencia HTTP {$httpCode} en Gemini con inline_data. Reintentando con texto extraído en PHP + metadatos BD...");
+                return llamarGemini($apiKey, $prompt, $jsonMode, 16, []);
             }
             if ($httpCode === 429 || $httpCode >= 500 || $httpCode === 404) {
                 error_log("Advertencia HTTP {$httpCode} en Gemini ({$model}). Probando siguiente modelo...");
@@ -2648,36 +2813,41 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25, $in
 
 /**
  * Registra en la tabla `log_consumo_ia` los tokens, créditos y costo estimado de la consulta.
- * Conversión de referencia:
- * - 1 Crédito = 1.000 tokens totales
- * - Tarifa referencia Gemini Flash: $0.10 USD / 1M tokens entrada, $0.40 USD / 1M tokens salida
+ * Envuelto en try/catch para evitar que una excepción SQL interrumpa la respuesta JSON.
  */
 function registrarConsumoIA($cnx, $idContrato, $idUsuario, $modelo, $intent, $tokensEntrada, $tokensSalida, $tokensTotales, $query) {
-    $creditos = round($tokensTotales / 1000, 4);
-    $costoUsd = round((($tokensEntrada / 1000000) * 0.10) + (($tokensSalida / 1000000) * 0.40), 6);
+    try {
+        if (!$cnx) {
+            return;
+        }
+        $creditos = round($tokensTotales / 1000, 4);
+        $costoUsd = round((($tokensEntrada / 1000000) * 0.10) + (($tokensSalida / 1000000) * 0.40), 6);
 
-    $sql = "INSERT INTO log_consumo_ia 
-            (id_contrato, id_usuario, fecha_hora, modelo_usado, intent_detectado, tokens_entrada, tokens_salida, tokens_totales, creditos_consumidos, costo_estimado_usd, consulta_usuario)
-            VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?)";
+        $sql = "INSERT INTO log_consumo_ia 
+                (id_contrato, id_usuario, fecha_hora, modelo_usado, intent_detectado, tokens_entrada, tokens_salida, tokens_totales, creditos_consumidos, costo_estimado_usd, consulta_usuario)
+                VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?)";
 
-    $stmt = mysqli_prepare($cnx, $sql);
-    if ($stmt) {
-        mysqli_stmt_bind_param(
-            $stmt,
-            "iissiiidds",
-            $idContrato,
-            $idUsuario,
-            $modelo,
-            $intent,
-            $tokensEntrada,
-            $tokensSalida,
-            $tokensTotales,
-            $creditos,
-            $costoUsd,
-            $query
-        );
-        @mysqli_stmt_execute($stmt);
-        mysqli_stmt_close($stmt);
+        $stmt = @mysqli_prepare($cnx, $sql);
+        if ($stmt) {
+            mysqli_stmt_bind_param(
+                $stmt,
+                "iissiiidds",
+                $idContrato,
+                $idUsuario,
+                $modelo,
+                $intent,
+                $tokensEntrada,
+                $tokensSalida,
+                $tokensTotales,
+                $creditos,
+                $costoUsd,
+                $query
+            );
+            @mysqli_stmt_execute($stmt);
+            @mysqli_stmt_close($stmt);
+        }
+    } catch (Throwable $e) {
+        error_log("Aviso: No se pudo registrar consumo IA en log_consumo_ia: " . $e->getMessage());
     }
 }
 
@@ -2692,39 +2862,60 @@ function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsul
             $crit = $ac['criterio_buscado'] ?: ($filters['doc_numero'] ?? 'indicado');
             return "No se encontró ningún documento con el número o código **{$crit}** dentro del contrato **{$userContractName}**.";
         }
-        $md = "### Resumen e Información del Documento y sus Archivos Asociados — Contrato **{$userContractName}**\n\n";
+        $md = "### Resumen e Información del Documento — Contrato **{$userContractName}**\n\n";
         foreach ($ac['documentos_analizados'] as $item) {
             $d = $item['metadatos_documento'];
             $ap = $item['archivo_principal'];
-            $md .= "#### **{$d['tipo_documento']} N° {$d['num_documento']}** (ID: {$d['id_documento']})\n";
-            $md .= "- **Materia / Asunto:** {$d['materia']}\n";
+            $md .= "#### **{$d['tipo_documento']} N° {$d['num_documento']}** (ID: {$d['id_documento']}" . (!empty($d['num_providencia']) ? " | Providencia: {$d['num_providencia']}" : "") . ")\n\n";
+            $md .= "##### 1. Lo que informa el documento (Resumen Ejecutivo)\n";
+            $md .= "- **Materia / Asunto Principal:** " . (!empty($d['materia']) ? $d['materia'] : 'Sin materia registrada') . "\n";
             if (!empty($d['antecedente'])) {
                 $md .= "- **Antecedente:** {$d['antecedente']}\n";
             }
-            if (!empty($d['comentario'])) {
-                $md .= "- **Comentario / Observación:** {$d['comentario']}\n";
+            if (!empty($d['incluye'])) {
+                $md .= "- **Incluye:** {$d['incluye']}\n";
             }
-            $md .= "- **Fecha Documento:** {$d['fecha_documento']} | **Fecha Recepción:** {$d['fecha_recepcion']} | **Estado:** {$d['estado_documento']} | **Flujo:** {$d['flujo_documento']}\n";
-            $md .= "- **Remitente:** {$d['remitente']}" . (!empty($d['cargo_remitente']) ? " ({$d['cargo_remitente']})" : "") . "\n";
-            $md .= "- **Destinatario:** {$d['destinatario']}" . (!empty($d['cargo_destinatario']) ? " ({$d['cargo_destinatario']})" : "") . "\n";
-            $md .= "- **Responsable:** {$d['responsable']} | **Código de Proceso:** {$d['num_proceso']}\n";
-            $md .= "- **Archivo Principal Asociado:** " . ($ap['tiene_archivo_cargado'] ? "`{$ap['nombre_archivo']}` ({$ap['mime_type']}, {$ap['tamano_legible']}) — [Descargar Archivo Principal]({$ap['url_descarga']})" : "Sin archivo binario cargado") . "\n";
+            if (!empty($d['comentario'])) {
+                $md .= "- **Observación / Comentario:** {$d['comentario']}\n";
+            }
 
             if (!empty($ap['texto_extraido_local'])) {
-                $extracto = mb_substr($ap['texto_extraido_local'], 0, 1200, 'UTF-8');
-                $md .= "\n**Extracto del contenido del archivo:**\n> " . str_replace("\n", "\n> ", $extracto) . "\n";
+                $extracto = mb_substr($ap['texto_extraido_local'], 0, 1800, 'UTF-8');
+                $md .= "\n**Contenido extraído del archivo del documento:**\n> " . str_replace("\n", "\n> ", $extracto) . "\n";
+            }
+
+            $md .= "\n##### 2. Ficha Técnica y Participantes\n";
+            $md .= "- **Fecha del Documento:** {$d['fecha_documento']} | **Fecha de Recepción:** {$d['fecha_recepcion']}" . (!empty($d['fecha_plazo']) && $d['fecha_plazo'] !== '0000-00-00' ? " | **Fecha Plazo:** {$d['fecha_plazo']}" : "") . "\n";
+            $md .= "- **Estado Actual:** **{$d['estado_documento']}** | **Flujo:** {$d['flujo_documento']}" . (!empty($d['fecha_cierre']) ? " | **Fecha Cierre:** {$d['fecha_cierre']}" : "") . "\n";
+            $md .= "- **Remitente (Quién informa/envía):** " . (!empty($d['remitente']) ? $d['remitente'] : 'Sin especificar') . (!empty($d['cargo_remitente']) ? " (*{$d['cargo_remitente']}*)" : "") . "\n";
+            $md .= "- **Destinatario (A quién se dirige):** " . (!empty($d['destinatario']) ? $d['destinatario'] : 'Sin especificar') . (!empty($d['cargo_destinatario']) ? " (*{$d['cargo_destinatario']}*)" : "") . "\n";
+            $md .= "- **Responsable Asignado:** " . (!empty($d['responsable']) ? $d['responsable'] : 'Sin asignar') . (!empty($d['num_proceso']) ? " | **Código de Proceso:** `{$d['num_proceso']}`" : "") . (!empty($d['nombre_subcontrato']) ? " | **Subcontrato:** {$d['nombre_subcontrato']}" : "") . "\n";
+            $md .= "- **Archivo Principal:** " . ($ap['tiene_archivo_cargado'] ? "`{$ap['nombre_archivo']}` ({$ap['mime_type']}, {$ap['tamano_legible']}) — [Descargar Documento]({$ap['url_descarga']})" : "Registro documental sin archivo binario adjunto — [Ver Ficha / Descargar]({$ap['url_descarga']})") . "\n";
+
+            if (!empty($item['acciones_requeridas'])) {
+                $md .= "- **Acciones / Actividades Requeridas:** " . implode(', ', $item['acciones_requeridas']) . "\n";
             }
 
             if (!empty($item['archivos_adjuntos'])) {
-                $md .= "\n**Archivos Adjuntos Asociados (" . count($item['archivos_adjuntos']) . "):**\n";
+                $md .= "\n##### 3. Archivos Adjuntos Asociados (" . count($item['archivos_adjuntos']) . ")\n";
                 foreach ($item['archivos_adjuntos'] as $adj) {
                     $md .= "- `{$adj['nombre_adjunto']}` ({$adj['mime_type']}, {$adj['tamano_legible']}) — [Descargar Adjunto]({$adj['url_descarga']})\n";
+                    if (!empty($adj['texto_extraido_local'])) {
+                        $extAdj = mb_substr($adj['texto_extraido_local'], 0, 600, 'UTF-8');
+                        $md .= "  > " . str_replace("\n", " ", $extAdj) . "\n";
+                    }
                 }
             }
             if (!empty($item['bitacora_respuestas'])) {
-                $md .= "\n**Bitácora de Respuestas / Gestión:**\n";
+                $md .= "\n##### 4. Historial de Bitácora / Respuestas\n";
                 foreach ($item['bitacora_respuestas'] as $bit) {
                     $md .= "- **{$bit['fecha_emision']} ({$bit['emisor']}):** {$bit['asunto']} — {$bit['detalle_respuesta']}\n";
+                }
+            }
+            if (!empty($item['documentos_relacionados_seguimiento'])) {
+                $md .= "\n##### 5. Documentos Relacionados en Seguimiento (" . count($item['documentos_relacionados_seguimiento']) . ")\n";
+                foreach ($item['documentos_relacionados_seguimiento'] as $relS) {
+                    $md .= "- **{$relS['tipo_documento']} N° {$relS['num_documento']}** ({$relS['fecha_documento']}, {$relS['estado_documento']}): {$relS['materia']} — [Descargar Documento](negocio/descargarDocumento.php?idDocumento={$relS['id_documento']})\n";
                 }
             }
             $md .= "\n";
@@ -3446,9 +3637,9 @@ $esConsultaRelacionadosPre = (bool)preg_match(
 // Detectar de forma determinista en PHP si el usuario consulta por documentos repetidos o duplicados en general (ya sea del contrato o de seguimiento del contrato)
 $esConsultaRepetidosPre = $mencionaRepeticionPre;
 
-// Detectar de forma determinista en PHP si el usuario pide un resumen, síntesis, lectura, explicación o información de los archivos asociados a un documento
+// Detectar de forma determinista en PHP si el usuario pide un resumen, síntesis, lectura, lo que informa, explicación o información de un documento y sus archivos asociados
 $esConsultaContenidoArchivoPre = !$esConsultaRelacionadosPre && !$esConsultaRepetidosPre && (bool)preg_match(
-    '/\b(resumen(?:to)?|resumir|res[uú]me(?:me|lo|la)?|s[ií]ntesis|sintetiza(?:r)?|de\s+qu[eé]\s+trata|qu[eé]\s+trata|qu[eé]\s+dice|qu[eé]\s+contiene|contenido\s+(?:de|del)|explica(?:r|me)?\s+(?:el|la)|analiza(?:r)?\s+(?:el|la)|lee(?:r)?\s+(?:el|la)|archivos?\s+asociad[oa]s?|adjuntos?\s+(?:de|del|asociad[oa]s?)|anexos?\s+(?:de|del|asociad[oa]s?)|informaci[oó]n\s+(?:sobre|de|del|acerca\s+de)\s+(?:el\s+|la\s+)?(?:documento|carta|oficio|informe|archivo|ord))\b/iu',
+    '/\b(resumen(?:to)?|resumir|res[uú]me(?:me|lo|la)?|s[ií]ntesis|sintetiza(?:r)?|de\s+qu[eé]\s+trata|qu[eé]\s+trata|qu[eé]\s+dice|qu[eé]\s+informa|lo\s+que\s+informa|informa\s+(?:el|la)\s+(?:documento|carta|oficio|informe)|qu[eé]\s+contiene|contenido\s+(?:de|del)|detalle\s+(?:de|del)\s+(?:el\s+|la\s+)?(?:documento|carta|oficio|informe)|explica(?:r|me)?\s+(?:el|la)|analiza(?:r)?\s+(?:el|la)|lee(?:r)?\s+(?:el|la)|archivos?\s+asociad[oa]s?|adjuntos?\s+(?:de|del|asociad[oa]s?)|anexos?\s+(?:de|del|asociad[oa]s?)|informaci[oó]n\s+(?:sobre|de|del|acerca\s+de)\s+(?:el\s+|la\s+)?(?:documento|carta|oficio|informe|archivo|ord))\b/iu',
     $query
 );
 
@@ -3463,19 +3654,19 @@ if (preg_match('/\b(?:n[uú]mero|nro\.?|n[°ºo]|c[oó]digo)?\s*(?:de\s+|del\s+)
     $numProcesoExplicitoDetectado = trim($mProcDots[1]);
 }
 
-// Extraer de forma determinista en PHP códigos/números de documento como "ORD.IF : N°1348/2026", "SCINC/IF/1140/2026" o "1140/2026"
+// Extraer de forma determinista en PHP códigos/números de documento como "ORD.IF : N°1348/2026", "SCINC/IF/1001/2026", "SCINC/IF/1140/2026" o "1140/2026"
 $docNumeroExplicitoDetectado = null;
 if (preg_match('/\b([A-Z]{2,15}(?:[.\-\/][A-Z0-9]{1,15})*\s*(?::\s*)?(?:N[°ºo]\.?|NRO\.?)?\s*[0-9]+\/[0-9]{2,4})\b/iu', $query, $mCompositeCode)) {
     $candComp = trim($mCompositeCode[1]);
-    // Evitar incluir sustantivos genéricos iniciales como "documento 1140/2026" o "carta 1140/2026"
-    $candComp = preg_replace('/^(?:documento|carta|oficio|informe|providencia|memor[aá]ndum|resoluci[oó]n)\s+/iu', '', $candComp);
+    // Evitar incluir sustantivos genéricos iniciales como "documento 1140/2026", "numero 1001/2026" o "carta 1140/2026"
+    $candComp = preg_replace('/^(?:(?:el|la|del|de|con|al)\s+)*(?:(?:documento|carta|oficio|informe|providencia|memor[aá]ndum|resoluci[oó]n|n[uú]mero|nro\.?)\s+)+/iu', '', $candComp);
     $docNumeroExplicitoDetectado = trim($candComp);
 } elseif (preg_match('/\b([A-Z0-9_.\-]{1,30}(?:\/[A-Z0-9_.\-]{1,30})+)\b/iu', $query, $mCodeSlash)) {
     // Evitar confundir una fecha completa DD/MM/YYYY con un número de documento
     if (!preg_match('/^\d{1,2}\/\d{1,2}\/\d{2,4}$/', $mCodeSlash[1])) {
         $docNumeroExplicitoDetectado = trim($mCodeSlash[1]);
     }
-} elseif ($numProcesoExplicitoDetectado === null && preg_match('/\b(?:carta|oficio|informe|documento|providencia|memor[aá]ndum|resoluci[oó]n|n[°ºo]|nro\.?|n[uú]mero)\s+(?:n[°ºo]\s*|nro\.?\s*)?([A-Z0-9_.\-\/]{2,40})\b/iu', $query, $mCodeWord)) {
+} elseif ($numProcesoExplicitoDetectado === null && preg_match('/\b(?:carta|oficio|informe|documento|providencia|memor[aá]ndum|resoluci[oó]n|n[°ºo]|nro\.?|n[uú]mero)\s+(?:con\s+)?(?:n[°ºo]\s*|nro\.?\s*|n[uú]mero\s*)?([A-Z0-9_.\-\/]{2,40})\b/iu', $query, $mCodeWord)) {
     $candidato = trim($mCodeWord[1], ".,;:?¿!¡\"'()[]");
     if (preg_match('/\d/', $candidato)) {
         $docNumeroExplicitoDetectado = $candidato;
@@ -3569,13 +3760,30 @@ Debes retornar EXCLUSIVAMENTE un objeto JSON estructurado con las siguientes cla
 
 Consulta del usuario: \"" . $query . "\"";
 
-$stage1Res = llamarGemini($apiKey, $stage1Prompt, true, 12);
+// Si en PHP ya detectamos de forma determinista el código exacto del documento (ej. "SCINC/IF/1001/2026" o "ORD.IF : N°1348/2026")
+// y sabemos que es una consulta de resumen/información del documento o de sus documentos relacionados,
+// omitimos la llamada de red del Paso 1 para evitar doble latencia y timeouts HTTP en el servidor.
+$usarFastPathLocalPaso1 = ($docNumeroExplicitoDetectado !== null && ($esConsultaContenidoArchivoPre || $esConsultaRelacionadosPre));
 
+$stage1Res = [];
 $searchParams = null;
-if (!isset($stage1Res['error']) && isset($stage1Res['text'])) {
-    $searchParams = extraerJsonDeTexto($stage1Res['text']);
+if ($usarFastPathLocalPaso1) {
+    $searchParams = [
+        'intent' => 'document',
+        'keywords' => [],
+        'filters' => [
+            'doc_numero' => $docNumeroExplicitoDetectado,
+            'es_consulta_contenido_archivo' => $esConsultaContenidoArchivoPre,
+            'es_consulta_relacionados' => $esConsultaRelacionadosPre
+        ]
+    ];
 } else {
-    error_log("Paso 1 IA usó extractor NLU local en PHP por demora/error de red: " . ($stage1Res['error'] ?? 'sin respuesta'));
+    $stage1Res = llamarGemini($apiKey, $stage1Prompt, true, 10);
+    if (!isset($stage1Res['error']) && isset($stage1Res['text'])) {
+        $searchParams = extraerJsonDeTexto($stage1Res['text']);
+    } else {
+        error_log("Paso 1 IA usó extractor NLU local en PHP por demora/error de red: " . ($stage1Res['error'] ?? 'sin respuesta'));
+    }
 }
 
 if (!$searchParams) {
@@ -4102,13 +4310,15 @@ if ($esConsultaRelacionados) {
    - Si `total_documentos_repetidos_encontrados` es `0`, responde claramente que no se encontraron repeticiones bajo ese criterio específico.
    - Si existen documentos en `documentos_repetidos`, lista cada uno indicando su `tipo_documento`, `num_documento`, `materia`, `fecha_documento`, `responsable`, `veces_repetido`, su `motivo_repeticion` (y `detalle_seguimiento_repetido` cuando `modo_evaluacion` es `'seguimiento'`), incluyendo el enlace `[Descargar Documento](negocio/descargarDocumento.php?idDocumento=ID)`.";
 } elseif ($esConsultaContenidoArchivo) {
-    $instruccionesEspecificas = "3. ANÁLISIS, LECTURA Y RESUMEN DE DOCUMENTO Y SUS ARCHIVOS ASOCIADOS: El usuario solicita un resumen, explicación o información sobre un documento específico (ej. `ORD.IF : N°1348/2026`) y sus archivos asociados. Responde utilizando los datos de `analisis_contenido_documento` Y el contenido de los archivos binarios adjuntos en la petición (`inline_data` PDF/imágenes) o `texto_extraido_local`:
+    $instruccionesEspecificas = "3. ANÁLISIS, LECTURA Y RESUMEN DE LO QUE INFORMA EL DOCUMENTO Y SUS ARCHIVOS ASOCIADOS: El usuario solicita un resumen, explicación o información sobre un documento específico (ej. `SCINC/IF/1001/2026` o `ORD.IF : N°1348/2026`). Responde utilizando los datos de `analisis_contenido_documento` Y, cuando esté presente, el contenido de los archivos binarios adjuntos en la petición (`inline_data` PDF/imágenes) o `texto_extraido_local`:
    - Si `documento_encontrado` es `false`, indícale claramente que no se encontró ningún documento con ese código dentro de su contrato.
-   - Presenta una **Ficha de Identificación del Documento** con sus datos clave (`tipo_documento`, `num_documento`, `num_providencia`, `num_proceso`, `materia`, `fecha_documento`, `fecha_recepcion`, `estado_documento`, `flujo_documento`, `remitente`, `destinatario`, `responsable`).
-   - Presenta un **Resumen Ejecutivo Completo del Contenido del Archivo**: lee íntegramente el archivo principal adjunto en binario (`inline_data`) y/o su `texto_extraido_local` (junto con `materia`, `antecedente`, `incluye`, `comentario` y `bitacora_respuestas`) y explica con claridad:
-     1. **Objetivo / Asunto principal del documento**.
-     2. **Puntos clave, solicitudes, hallazgos, montos, plazos o conclusiones** contenidos dentro del archivo.
-     3. **Archivos asociados y adjuntos**: indica el nombre y tamaño del archivo principal (`archivo_principal.nombre_archivo`) con su enlace `[Descargar Archivo Principal](negocio/descargarDocumento.php?idDocumento=ID)`, y si existen archivos en `archivos_adjuntos`, detállalos junto con su resumen y su enlace `[Descargar Adjunto](negocio/descargarDocumento.php?idAdjunto=ID_ADJUNTO)`.";
+   - Si `documento_encontrado` es `true`, entrega siempre una respuesta estructurada y completa con toda la información disponible del documento:
+     1. **Resumen Ejecutivo de lo que informa el documento**: sintetiza de forma clara y directa qué informa, comunica o solicita el documento a partir de su `materia`, `antecedente`, `incluye`, `comentario`, `bitacora_respuestas`, `acciones_requeridas` y el contenido de su archivo (`inline_data` y/o `texto_extraido_local`). Incluso si el registro no tiene un archivo PDF binario cargado (`tiene_archivo_cargado` = `false`) o si su archivo es escaneado, NUNCA dejes de entregar el resumen completo basado en la materia, antecedente, comentario, bitácora, participantes y seguimiento registrados en el sistema.
+     2. **Ficha Técnica del Documento**: detalla ordenadamente `tipo_documento`, `num_documento`, `num_providencia`, `num_proceso`, `fecha_documento`, `fecha_recepcion`, `fecha_plazo`, `estado_documento`, `flujo_documento`, `remitente` (`cargo_remitente`), `destinatario` (`cargo_destinatario`), `responsable` y `nombre_subcontrato`.
+     3. **Archivos Asociados, Bitácora y Seguimiento**:
+        - Si `archivo_principal.tiene_archivo_cargado` es `true`, muestra el nombre y tamaño del archivo con su enlace `[Descargar Archivo Principal](negocio/descargarDocumento.php?idDocumento=ID)`; si no tiene archivo binario cargado, incluye igualmente el enlace `[Descargar / Ver Documento](negocio/descargarDocumento.php?idDocumento=ID)`.
+        - Si existen archivos en `archivos_adjuntos`, detállalos junto con su enlace `[Descargar Adjunto](negocio/descargarDocumento.php?idAdjunto=ID_ADJUNTO)`.
+        - Si existen registros en `bitacora_respuestas` o `documentos_relacionados_seguimiento`, menciónalos brevemente como parte del contexto y gestión del documento.";
 } elseif ($esConsultaTiempos) {
     $instruccionesEspecificas = "3. CONSULTA DE TIEMPOS Y MÉTRICAS ENTRE FECHAS DE DOCUMENTOS: El usuario está consultando por tiempos de gestión, demora promedio en pasar de Pendiente a Cerrado, diferencia entre fechas de documentos o cumplimiento de plazos. Responde utilizando EXCLUSIVAMENTE los datos calculados en `metricas_tiempos_fechas_documentos`:
    - Entrega primero las **métricas generales del contrato** (`resumen_general_tiempos`):
@@ -4150,6 +4360,12 @@ if ($excelExportInfo !== null) {
     $instruccionesEspecificas .= "\n6. PLANILLA EXCEL GENERADA: Se ha generado una planilla Excel que contiene ÚNICAMENTE la información solicitada por el usuario ({$excelExportInfo['rows_count']} filas y las columnas: " . implode(', ', $excelExportInfo['columns']) . "). Confírmale brevemente al usuario qué información se incluyó en su planilla.";
 }
 
+$jsonFlagsPrompt = JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | (defined('JSON_INVALID_UTF8_SUBSTITUTE') ? JSON_INVALID_UTF8_SUBSTITUTE : 0);
+$datosJsonPrompt = json_encode($dbResultsForPrompt, $jsonFlagsPrompt);
+if ($datosJsonPrompt === false) {
+    $datosJsonPrompt = '{}';
+}
+
 $stage2Prompt = "Eres el asistente de Inteligencia Artificial del Sistema de Gestión Documental (SGD) de Axioma.
 Fecha actual del sistema: {$fechaActual} (Año {$anioActual}).
 Usuario en sesión: {$userFullName} (Usuario: {$userLoginName}).
@@ -4160,7 +4376,7 @@ Tu objetivo es responder de forma directa, profesional, clara y amable a la cons
 Consulta del usuario: \"" . $query . "\"
 
 Datos reales del sistema (filtrados por el contrato \"{$userContractName}\" del usuario en sesión):
-" . json_encode($dbResultsForPrompt, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "
+" . $datosJsonPrompt . "
 
 Instrucciones obligatorias para elaborar tu respuesta:
 1. Responde en español neutro de forma directa y clara. Si el usuario cometió algún error menor de ortografía o tilde al escribir el nombre de un responsable, remitente, destinatario o término (por ejemplo, 'Jefe Asesoria' por 'Jefe Asesoría'), entiéndelo con naturalidad y muéstrale directamente la información encontrada.
@@ -4168,7 +4384,7 @@ Instrucciones obligatorias para elaborar tu respuesta:
 {$instruccionesEspecificas}
 7. NO utilices jerga técnica de base de datos ni menciones consultas SQL o estructuras JSON.";
 
-$timeoutPaso2 = !empty($inlinePartsDocumento) ? 55 : 30;
+$timeoutPaso2 = !empty($inlinePartsDocumento) ? 22 : 20;
 $stage2Res = llamarGemini($apiKey, $stage2Prompt, false, $timeoutPaso2, $inlinePartsDocumento);
 
 // Sumar tokens del Paso 1 + Paso 2
@@ -4188,7 +4404,10 @@ registrarConsumoIA(
     $tokensTotales,
     $query
 );
-mysqli_close($cnx);
+try {
+    @mysqli_close($cnx);
+} catch (Throwable $e) {
+}
 
 $finalAnswer = isset($stage2Res['text'])
     ? $stage2Res['text']
@@ -4205,10 +4424,21 @@ if ($excelExportInfo !== null) {
     }
 }
 
-echo json_encode([
+if (ob_get_length()) {
+    @ob_clean();
+}
+
+$outFlags = JSON_UNESCAPED_UNICODE | (defined('JSON_INVALID_UTF8_SUBSTITUTE') ? JSON_INVALID_UTF8_SUBSTITUTE : 0);
+$jsonOut = json_encode([
     'success' => true,
-    'answer' => $finalAnswer,
+    'answer' => limpiarTextoUtf8Seguro($finalAnswer),
     'intent' => $intent,
     'filters_detected' => $searchParams,
     'excel_export' => $excelExportInfo
+], $outFlags);
+
+echo $jsonOut !== false ? $jsonOut : json_encode([
+    'success' => true,
+    'answer' => 'Se procesó la consulta pero ocurrió un problema de codificación al formatear la salida.',
+    'intent' => $intent
 ]);
