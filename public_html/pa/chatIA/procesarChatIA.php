@@ -374,6 +374,7 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
     if (!empty($filters['doc_numero'])) {
         $docNumRaw = trim((string)$filters['doc_numero']);
         $variantesNum = [$docNumRaw];
+
         // Si el código tiene prefijos con "/" o "-" (ej. "SCINC/IF/1140/2026"), agregar también el sufijo corto (ej. "1140/2026")
         $segmentosSlash = array_values(array_filter(array_map('trim', explode('/', $docNumRaw)), function ($s) { return $s !== ''; }));
         if (count($segmentosSlash) >= 3) {
@@ -382,6 +383,18 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
                 $variantesNum[] = $sufijoDos;
             }
         }
+
+        // Si el código incluye prefijos con ":", "N°", "Nº", "Nro" o espacios (ej. "ORD.IF : N°1348/2026"),
+        // extraer también el código numérico/barra final (ej. "1348/2026" y "N°1348/2026")
+        if (preg_match('/([0-9]+\/[0-9]{2,4})\b/u', $docNumRaw, $mShortSlash)) {
+            $shortSlash = trim($mShortSlash[1]);
+            foreach ([$shortSlash, 'N°' . $shortSlash, 'N° ' . $shortSlash] as $candVar) {
+                if (!in_array($candVar, $variantesNum, true)) {
+                    $variantesNum[] = $candVar;
+                }
+            }
+        }
+
         $orNumParts = [];
         foreach ($variantesNum as $vNum) {
             $orNumParts[] = "(" . sqlLikeUtf8('dd.num_documento') . " OR " . sqlLikeUtf8('dd.num_providencia') . " OR " . sqlLikeUtf8('dd.num_proceso') . " OR " . sqlLikeUtf8('d.nombre_documento') . ")";
@@ -392,6 +405,16 @@ function construirBaseWhereDocumentos($userContractId, $userId, $filters = [], $
             $params[] = $likeV;
             $types .= "ssss";
         }
+
+        // Comparación adicional normalizada sin espacios, dos puntos ni símbolo de grado (ej. "ORD.IF : N°1348/2026" == "ORD.IF: N° 1348/2026")
+        $docNumCompacto = preg_replace('/[\s:°º]+/u', '', $docNumRaw);
+        if ($docNumCompacto !== '' && mb_strlen($docNumCompacto) >= 3) {
+            $colNormSql = "REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(dd.num_documento USING utf8) COLLATE utf8_general_ci, ' ', ''), ':', ''), '°', ''), 'º', '')";
+            $orNumParts[] = "({$colNormSql} LIKE CONVERT(? USING utf8) COLLATE utf8_general_ci)";
+            $params[] = "%" . $docNumCompacto . "%";
+            $types .= "s";
+        }
+
         $where .= " AND (" . implode(" OR ", $orNumParts) . ")";
     }
 
@@ -1425,12 +1448,15 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
         return $rawRows;
     }
 
-    // Si se buscó por un número de documento específico (ej. "carta SCINC/IF/1140/2026" o "1140/2026")
-    // y no hubo coincidencias por restricción de tipo_documento o año, reintentamos flexibilizando tipo_documento y anio
-    if (empty($rawRows) && !empty($filters['doc_numero']) && (!empty($filters['tipo_documento']) || !empty($filters['anio']))) {
+    // Si se buscó por un número de documento específico (ej. "ORD.IF : N°1348/2026", "SCINC/IF/1140/2026" o "1140/2026")
+    // y no hubo coincidencias por restricción de tipo_documento, materia, estado o año, reintentamos flexibilizando esos filtros
+    if (empty($rawRows) && !empty($filters['doc_numero']) && (!empty($filters['tipo_documento']) || !empty($filters['materia']) || !empty($filters['anio']) || !empty($filters['mes']) || !empty($filters['estado_doc']))) {
         $filtersFlex = $filters;
         $filtersFlex['tipo_documento'] = null;
+        $filtersFlex['materia'] = null;
         $filtersFlex['anio'] = null;
+        $filtersFlex['mes'] = null;
+        $filtersFlex['estado_doc'] = null;
         return buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filtersFlex, [], $customVars, $usuariosContrato);
     }
 
@@ -1444,15 +1470,22 @@ function buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filters =
         }
     }
 
-    // Si se buscó por doc_numero, priorizar coincidencias exactas o más específicas primero
+    // Si se buscó por doc_numero, priorizar coincidencias exactas o normalizadas más específicas primero
     if (!empty($filters['doc_numero']) && count($docs) > 1) {
         $needleNorm = mb_strtolower(trim((string)$filters['doc_numero']), 'UTF-8');
-        usort($docs, function ($a, $b) use ($needleNorm) {
-            $numA = mb_strtolower(trim((string)($a['num_documento'] ?? '')), 'UTF-8');
-            $numB = mb_strtolower(trim((string)($b['num_documento'] ?? '')), 'UTF-8');
-            $scoreA = ($numA === $needleNorm) ? 3 : ((substr($numA, -strlen($needleNorm)) === $needleNorm) ? 2 : (strpos($numA, $needleNorm) !== false ? 1 : 0));
-            $scoreB = ($numB === $needleNorm) ? 3 : ((substr($numB, -strlen($needleNorm)) === $needleNorm) ? 2 : (strpos($numB, $needleNorm) !== false ? 1 : 0));
-            return $scoreB <=> $scoreA;
+        $needleCompact = preg_replace('/[\s:°º]+/u', '', $needleNorm);
+        usort($docs, function ($a, $b) use ($needleNorm, $needleCompact) {
+            $calcScore = function ($d) use ($needleNorm, $needleCompact) {
+                $num = mb_strtolower(trim((string)($d['num_documento'] ?? '')), 'UTF-8');
+                $numCompact = preg_replace('/[\s:°º]+/u', '', $num);
+                if ($num === $needleNorm) return 5;
+                if ($needleCompact !== '' && $numCompact === $needleCompact) return 4;
+                if ($needleCompact !== '' && strpos($numCompact, $needleCompact) !== false) return 3;
+                if (substr($num, -strlen($needleNorm)) === $needleNorm) return 2;
+                if (strpos($num, $needleNorm) !== false) return 1;
+                return 0;
+            };
+            return $calcScore($b) <=> $calcScore($a);
         });
     }
 
@@ -1737,16 +1770,21 @@ function consultarDocumentosRelacionados($cnx, $userContractId, $userId, $filter
 }
 
 /**
- * Evalúa todos los documentos del contrato que cumplen con los filtros (ej. mes de septiembre de 2026,
- * año, responsable, proceso, etc.) y filtra ÚNICAMENTE aquellos que están repetidos o duplicados.
- * Evalúa 4 criterios reales de repetición/duplicidad en la base de datos:
- * 1. Mismo N° de Documento (`num_documento`) registrado en 2 o más documentos distintos.
- * 2. Mismo N° de Providencia (`num_providencia`) registrado en 2 o más documentos distintos.
- * 3. Misma combinación de Tipo de Documento + Materia + Fecha de Documento en 2 o más registros.
- * 4. Repetición en la tabla `seguimiento` (el documento aparece vinculado múltiples veces en el mismo
- *    número de seguimiento o tiene documentos relacionados duplicados en su seguimiento).
+ * Evalúa los documentos del contrato que cumplen con los filtros (ej. mes, año, responsable, proceso, o todo el contrato)
+ * diferenciando estrictamente dos modos independientes para que NUNCA se mezclen sus resultados:
+ *
+ * - Modo `'contrato'` (por defecto):
+ *   Evalúa ÚNICAMENTE los documentos asociados al contrato en las tablas `documento` y `detalle_documento` que están
+ *   repetidos por tener el mismo N° de Documento (`num_documento`) o el mismo N° de Providencia (`num_providencia`)
+ *   en 2 o más registros distintos (`id_documento`). NO incluye repeticiones de la tabla `seguimiento`.
+ *
+ * - Modo `'seguimiento'`:
+ *   Evalúa ÚNICAMENTE la tabla `seguimiento` de los documentos del contrato y retorna solo aquellos documentos que
+ *   tienen documentos de seguimiento / documentos relacionados repetidos dentro de un mismo hilo `numero_seguimiento`.
+ *   NO incluye documentos repetidos del contrato que no tengan duplicidad en `seguimiento`.
  */
-function consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = []) {
+function consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = [], $modoRepeticion = 'contrato') {
+    $modoRepeticion = ($modoRepeticion === 'seguimiento') ? 'seguimiento' : 'contrato';
     $base = construirBaseWhereDocumentos($userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
 
     $sql = "SELECT d.id_documento, d.nombre_documento, d.fecha_documento, d.fecha_recepcion, d.fecha_plazo,
@@ -1786,8 +1824,14 @@ function consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters =
         }
     }
 
+    $descripcionModo = ($modoRepeticion === 'seguimiento')
+        ? 'Documentos del contrato que presentan documentos de seguimiento (documentos relacionados) repetidos'
+        : 'Documentos asociados al contrato repetidos por N° de Documento o N° de Providencia';
+
     if (empty($docsPeriodo)) {
         return [
+            'modo_evaluacion' => $modoRepeticion,
+            'descripcion_evaluacion' => $descripcionModo,
             'total_documentos_evaluados_en_periodo' => 0,
             'total_documentos_repetidos_encontrados' => 0,
             'documentos_repetidos' => []
@@ -1802,119 +1846,150 @@ function consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters =
         return in_array($norm, $valoresIgnorados, true) ? '' : $norm;
     };
 
-    // 1. Agrupar dentro del periodo consultado por num_documento y num_providencia
     $porNumDoc = [];
     $porNumProv = [];
-
-    foreach ($docsPeriodo as $idDoc => $doc) {
-        $numNorm = $normalizarCodigo($doc['num_documento'] ?? '');
-        if ($numNorm !== '') {
-            $porNumDoc[$numNorm][$idDoc] = $doc['num_documento'];
-        }
-
-        $provNorm = $normalizarCodigo($doc['num_providencia'] ?? '');
-        if ($provNorm !== '') {
-            $porNumProv[$provNorm][$idDoc] = $doc['num_providencia'];
-        }
-    }
-
-    // 2. Además, verificar contra todo el contrato si algún documento del periodo tiene su mismo num_documento en otro registro del contrato
-    $baseContrato = construirBaseWhereDocumentos($userContractId, $userId, [], [], [], $usuariosContrato);
-    $sqlGlobalNum = "SELECT d.id_documento, dd.num_documento"
-                    . $baseContrato['from_joins']
-                    . $baseContrato['where'];
-    $rowsGlobal = ejecutarSelect($cnx, $sqlGlobalNum, $baseContrato['params'], $baseContrato['types']);
-    if (is_array($rowsGlobal) && !isset($rowsGlobal['error'])) {
-        foreach ($rowsGlobal as $rg) {
-            $idG = (int)$rg['id_documento'];
-            $numGNorm = $normalizarCodigo($rg['num_documento'] ?? '');
-            if ($numGNorm !== '' && isset($porNumDoc[$numGNorm])) {
-                $porNumDoc[$numGNorm][$idG] = $rg['num_documento'];
-            }
-        }
-    }
-
-    // 3. Evaluar repeticiones en la tabla `seguimiento` para los documentos del periodo
-    $idsPeriodo = array_keys($docsPeriodo);
     $duplicadosSeguimientoPorDoc = [];
-    $chunksIds = array_chunk($idsPeriodo, 300);
+    $numSeguimientoPorDoc = [];
 
-    foreach ($chunksIds as $chunk) {
-        $ph = implode(',', array_fill(0, count($chunk), '?'));
-        $typesChunk = str_repeat('i', count($chunk));
-        $sqlSegBase = "SELECT id_seguimiento, id_documento, numero_seguimiento
-                       FROM seguimiento
-                       WHERE id_documento IN ({$ph}) AND numero_seguimiento <> 0";
-        $rowsSegBase = ejecutarSelect($cnx, $sqlSegBase, $chunk, $typesChunk);
-        if (!is_array($rowsSegBase) || isset($rowsSegBase['error']) || empty($rowsSegBase)) {
-            continue;
-        }
+    if ($modoRepeticion === 'contrato') {
+        // MODO A ('contrato'): Evaluar EXCLUSIVAMENTE documentos del contrato con num_documento o num_providencia repetido
+        foreach ($docsPeriodo as $idDoc => $doc) {
+            $numNorm = $normalizarCodigo($doc['num_documento'] ?? '');
+            if ($numNorm !== '') {
+                $porNumDoc[$numNorm][$idDoc] = $doc['num_documento'];
+            }
 
-        $numSegPorDoc = [];
-        $todosNumSeg = [];
-        foreach ($rowsSegBase as $rsb) {
-            $idD = (int)$rsb['id_documento'];
-            $nSeg = (int)$rsb['numero_seguimiento'];
-            if ($nSeg > 0) {
-                $numSegPorDoc[$idD][$nSeg] = true;
-                $todosNumSeg[$nSeg] = true;
+            $provNorm = $normalizarCodigo($doc['num_providencia'] ?? '');
+            if ($provNorm !== '') {
+                $porNumProv[$provNorm][$idDoc] = $doc['num_providencia'];
             }
         }
 
-        if (empty($todosNumSeg)) {
-            continue;
+        // Verificar también contra todo el contrato si algún documento del periodo tiene su mismo num_documento en otro registro del contrato
+        $baseContrato = construirBaseWhereDocumentos($userContractId, $userId, [], [], [], $usuariosContrato);
+        $sqlGlobalNum = "SELECT d.id_documento, dd.num_documento"
+                        . $baseContrato['from_joins']
+                        . $baseContrato['where'];
+        $rowsGlobal = ejecutarSelect($cnx, $sqlGlobalNum, $baseContrato['params'], $baseContrato['types']);
+        if (is_array($rowsGlobal) && !isset($rowsGlobal['error'])) {
+            foreach ($rowsGlobal as $rg) {
+                $idG = (int)$rg['id_documento'];
+                $numGNorm = $normalizarCodigo($rg['num_documento'] ?? '');
+                if ($numGNorm !== '' && isset($porNumDoc[$numGNorm])) {
+                    $porNumDoc[$numGNorm][$idG] = $rg['num_documento'];
+                }
+            }
         }
+    } else {
+        // MODO B ('seguimiento'): Evaluar EXCLUSIVAMENTE repeticiones dentro de la tabla `seguimiento`
+        $idsPeriodo = array_keys($docsPeriodo);
+        $chunksIds = array_chunk($idsPeriodo, 300);
 
-        $listaNumSeg = array_keys($todosNumSeg);
-        $phNumSeg = implode(',', array_fill(0, count($listaNumSeg), '?'));
-        $typesNumSeg = str_repeat('i', count($listaNumSeg));
+        foreach ($chunksIds as $chunk) {
+            $ph = implode(',', array_fill(0, count($chunk), '?'));
+            $typesChunk = str_repeat('i', count($chunk));
+            $sqlSegBase = "SELECT id_seguimiento, id_documento, numero_seguimiento
+                           FROM seguimiento
+                           WHERE id_documento IN ({$ph}) AND numero_seguimiento <> 0";
+            $rowsSegBase = ejecutarSelect($cnx, $sqlSegBase, $chunk, $typesChunk);
+            if (!is_array($rowsSegBase) || isset($rowsSegBase['error']) || empty($rowsSegBase)) {
+                continue;
+            }
 
-        $sqlAllSeg = "SELECT s.id_seguimiento, s.id_documento, s.numero_seguimiento,
-                             dd.num_documento, td.tipo_documento
-                      FROM seguimiento s
-                      INNER JOIN documento d ON s.id_documento = d.id_documento
-                      INNER JOIN detalle_documento dd ON d.id_documento = dd.id_documento
-                      LEFT JOIN tipo_documento td ON dd.id_tipo_doc = td.id_tipo_doc
-                      WHERE s.numero_seguimiento IN ({$phNumSeg}) AND s.numero_seguimiento <> 0";
-        $rowsAllSeg = ejecutarSelect($cnx, $sqlAllSeg, $listaNumSeg, $typesNumSeg);
-        if (!is_array($rowsAllSeg) || isset($rowsAllSeg['error'])) {
-            continue;
-        }
+            $numSegPorDocChunk = [];
+            $todosNumSeg = [];
+            foreach ($rowsSegBase as $rsb) {
+                $idD = (int)$rsb['id_documento'];
+                $nSeg = (int)$rsb['numero_seguimiento'];
+                if ($nSeg > 0) {
+                    $numSegPorDocChunk[$idD][$nSeg] = true;
+                    $numSeguimientoPorDoc[$idD][$nSeg] = $nSeg;
+                    $todosNumSeg[$nSeg] = true;
+                }
+            }
 
-        // Deduplicar por id_seguimiento y agrupar por numero_seguimiento -> id_documento
-        $seenIdSeg = [];
-        $segAgrupado = [];
-        $infoDocSeg = [];
-        foreach ($rowsAllSeg as $ras) {
-            $idS = (int)$ras['id_seguimiento'];
-            if (isset($seenIdSeg[$idS])) continue;
-            $seenIdSeg[$idS] = true;
-            $nSeg = (int)$ras['numero_seguimiento'];
-            $idDocS = (int)$ras['id_documento'];
-            $segAgrupado[$nSeg][$idDocS][] = $idS;
-            $infoDocSeg[$idDocS] = trim(($ras['tipo_documento'] ?? 'Doc.') . ' ' . ($ras['num_documento'] ?? ('ID ' . $idDocS)));
-        }
+            if (empty($todosNumSeg)) {
+                continue;
+            }
 
-        // Para cada documento del periodo, revisar si en alguno de sus numero_seguimiento hay documentos repetidos
-        foreach ($numSegPorDoc as $idDocP => $mapNSeg) {
-            foreach (array_keys($mapNSeg) as $nSeg) {
-                if (empty($segAgrupado[$nSeg])) continue;
-                foreach ($segAgrupado[$nSeg] as $idDocEnSeg => $listaIdSeguimiento) {
-                    $cantVeces = count($listaIdSeguimiento);
-                    if ($cantVeces > 1) {
-                        $etiquetaDocRep = $infoDocSeg[$idDocEnSeg] ?? ('ID ' . $idDocEnSeg);
-                        if ($idDocEnSeg === $idDocP) {
-                            $duplicadosSeguimientoPorDoc[$idDocP][] = [
-                                'veces' => $cantVeces,
-                                'motivo' => "El propio documento está repetido {$cantVeces} veces en el Seguimiento N° {$nSeg}",
-                                'doc_duplicado' => $etiquetaDocRep
-                            ];
-                        } else {
-                            $duplicadosSeguimientoPorDoc[$idDocP][] = [
-                                'veces' => $cantVeces,
-                                'motivo' => "Tiene documento relacionado repetido {$cantVeces} veces en Seguimiento N° {$nSeg} ({$etiquetaDocRep})",
-                                'doc_duplicado' => $etiquetaDocRep
-                            ];
+            $listaNumSeg = array_keys($todosNumSeg);
+            $phNumSeg = implode(',', array_fill(0, count($listaNumSeg), '?'));
+            $typesNumSeg = str_repeat('i', count($listaNumSeg));
+
+            $sqlAllSeg = "SELECT s.id_seguimiento, s.id_documento, s.numero_seguimiento,
+                                 dd.num_documento, td.tipo_documento
+                          FROM seguimiento s
+                          INNER JOIN documento d ON s.id_documento = d.id_documento
+                          INNER JOIN detalle_documento dd ON d.id_documento = dd.id_documento
+                          LEFT JOIN tipo_documento td ON dd.id_tipo_doc = td.id_tipo_doc
+                          WHERE s.numero_seguimiento IN ({$phNumSeg}) AND s.numero_seguimiento <> 0";
+            $rowsAllSeg = ejecutarSelect($cnx, $sqlAllSeg, $listaNumSeg, $typesNumSeg);
+            if (!is_array($rowsAllSeg) || isset($rowsAllSeg['error'])) {
+                continue;
+            }
+
+            // Deduplicar por id_seguimiento y agrupar por numero_seguimiento -> id_documento y por numero_seguimiento -> num_documento normalizado
+            $seenIdSeg = [];
+            $segAgrupadoPorIdDoc = [];
+            $segAgrupadoPorNumDoc = [];
+            $infoDocSeg = [];
+            foreach ($rowsAllSeg as $ras) {
+                $idS = (int)$ras['id_seguimiento'];
+                if (isset($seenIdSeg[$idS])) continue;
+                $seenIdSeg[$idS] = true;
+                $nSeg = (int)$ras['numero_seguimiento'];
+                $idDocS = (int)$ras['id_documento'];
+                $numDocSNorm = $normalizarCodigo($ras['num_documento'] ?? '');
+
+                $segAgrupadoPorIdDoc[$nSeg][$idDocS][] = $idS;
+                if ($numDocSNorm !== '') {
+                    $segAgrupadoPorNumDoc[$nSeg][$numDocSNorm][$idDocS] = trim(($ras['tipo_documento'] ?? 'Doc.') . ' ' . ($ras['num_documento'] ?? ('ID ' . $idDocS)));
+                }
+                $infoDocSeg[$idDocS] = trim(($ras['tipo_documento'] ?? 'Doc.') . ' ' . ($ras['num_documento'] ?? ('ID ' . $idDocS)));
+            }
+
+            // Para cada documento del contrato, revisar si en alguno de sus numero_seguimiento hay documentos de seguimiento repetidos
+            foreach ($numSegPorDocChunk as $idDocP => $mapNSeg) {
+                foreach (array_keys($mapNSeg) as $nSeg) {
+                    // Caso 1: Mismo id_documento insertado 2 o más veces en el mismo numero_seguimiento
+                    if (!empty($segAgrupadoPorIdDoc[$nSeg])) {
+                        foreach ($segAgrupadoPorIdDoc[$nSeg] as $idDocEnSeg => $listaIdSeguimiento) {
+                            $cantVeces = count($listaIdSeguimiento);
+                            if ($cantVeces > 1) {
+                                $etiquetaDocRep = $infoDocSeg[$idDocEnSeg] ?? ('ID ' . $idDocEnSeg);
+                                if ($idDocEnSeg === $idDocP) {
+                                    $duplicadosSeguimientoPorDoc[$idDocP][] = [
+                                        'veces' => $cantVeces,
+                                        'id_doc_repetido' => $idDocEnSeg,
+                                        'motivo' => "El propio documento ({$etiquetaDocRep}) aparece repetido {$cantVeces} veces en el Seguimiento N° {$nSeg}",
+                                        'doc_duplicado' => $etiquetaDocRep
+                                    ];
+                                } else {
+                                    $duplicadosSeguimientoPorDoc[$idDocP][] = [
+                                        'veces' => $cantVeces,
+                                        'id_doc_repetido' => $idDocEnSeg,
+                                        'motivo' => "Documento de seguimiento repetido {$cantVeces} veces en Seguimiento N° {$nSeg}: {$etiquetaDocRep} (ID: {$idDocEnSeg})",
+                                        'doc_duplicado' => $etiquetaDocRep
+                                    ];
+                                }
+                            }
+                        }
+                    }
+
+                    // Caso 2: Distintos id_documento con el mismo num_documento dentro del mismo numero_seguimiento
+                    if (!empty($segAgrupadoPorNumDoc[$nSeg])) {
+                        foreach ($segAgrupadoPorNumDoc[$nSeg] as $numDocNormSeg => $mapIdsConMismoNum) {
+                            if (count($mapIdsConMismoNum) > 1) {
+                                $idsDupSeg = array_keys($mapIdsConMismoNum);
+                                $etiquetaEjemplo = reset($mapIdsConMismoNum);
+                                $vecesNumSeg = count($idsDupSeg);
+                                $duplicadosSeguimientoPorDoc[$idDocP][] = [
+                                    'veces' => $vecesNumSeg,
+                                    'id_doc_repetido' => (int)$idsDupSeg[0],
+                                    'motivo' => "Documento de seguimiento con mismo N° ({$etiquetaEjemplo}) duplicado {$vecesNumSeg} veces en Seguimiento N° {$nSeg} (IDs: " . implode(', ', $idsDupSeg) . ")",
+                                    'doc_duplicado' => $etiquetaEjemplo
+                                ];
+                            }
                         }
                     }
                 }
@@ -1922,7 +1997,7 @@ function consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters =
         }
     }
 
-    // 4. Construir la lista final filtrada ÚNICAMENTE con los documentos que están repetidos/duplicados
+    // Construir la lista final filtrada ÚNICAMENTE según el modo solicitado ('contrato' vs 'seguimiento')
     $documentosRepetidos = [];
     foreach ($docsPeriodo as $idDoc => $doc) {
         $motivos = [];
@@ -1930,43 +2005,53 @@ function consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters =
         $idsAsociados = [$idDoc];
         $docsRelDup = [];
 
-        $numNorm = $normalizarCodigo($doc['num_documento'] ?? '');
-        if ($numNorm !== '' && isset($porNumDoc[$numNorm]) && count($porNumDoc[$numNorm]) > 1) {
-            $idsGrupo = array_keys($porNumDoc[$numNorm]);
-            $veces = count($idsGrupo);
-            $maxVeces = max($maxVeces, $veces);
-            $idsAsociados = array_values(array_unique(array_merge($idsAsociados, $idsGrupo)));
-            $motivos[] = "N° de Documento ({$doc['num_documento']}) repetido {$veces} veces (IDs: " . implode(', ', $idsGrupo) . ")";
-        }
+        if ($modoRepeticion === 'contrato') {
+            $numNorm = $normalizarCodigo($doc['num_documento'] ?? '');
+            if ($numNorm !== '' && isset($porNumDoc[$numNorm]) && count($porNumDoc[$numNorm]) > 1) {
+                $idsGrupo = array_keys($porNumDoc[$numNorm]);
+                $veces = count($idsGrupo);
+                $maxVeces = max($maxVeces, $veces);
+                $idsAsociados = array_values(array_unique(array_merge($idsAsociados, $idsGrupo)));
+                $motivos[] = "N° de Documento ({$doc['num_documento']}) repetido {$veces} veces en el contrato (IDs: " . implode(', ', $idsGrupo) . ")";
+            }
 
-        $provNorm = $normalizarCodigo($doc['num_providencia'] ?? '');
-        if ($provNorm !== '' && isset($porNumProv[$provNorm]) && count($porNumProv[$provNorm]) > 1) {
-            $idsGrupoP = array_keys($porNumProv[$provNorm]);
-            $vecesP = count($idsGrupoP);
-            $maxVeces = max($maxVeces, $vecesP);
-            $idsAsociados = array_values(array_unique(array_merge($idsAsociados, $idsGrupoP)));
-            $motivos[] = "N° de Providencia ({$doc['num_providencia']}) repetido {$vecesP} veces (IDs: " . implode(', ', $idsGrupoP) . ")";
-        }
-
-        if (!empty($duplicadosSeguimientoPorDoc[$idDoc])) {
-            foreach ($duplicadosSeguimientoPorDoc[$idDoc] as $dSeg) {
-                $maxVeces = max($maxVeces, (int)$dSeg['veces']);
-                $motivos[] = $dSeg['motivo'];
-                $docsRelDup[] = $dSeg['doc_duplicado'] . " (" . $dSeg['veces'] . " veces)";
+            $provNorm = $normalizarCodigo($doc['num_providencia'] ?? '');
+            if ($provNorm !== '' && isset($porNumProv[$provNorm]) && count($porNumProv[$provNorm]) > 1) {
+                $idsGrupoP = array_keys($porNumProv[$provNorm]);
+                $vecesP = count($idsGrupoP);
+                $maxVeces = max($maxVeces, $vecesP);
+                $idsAsociados = array_values(array_unique(array_merge($idsAsociados, $idsGrupoP)));
+                $motivos[] = "N° de Providencia ({$doc['num_providencia']}) repetido {$vecesP} veces en el contrato (IDs: " . implode(', ', $idsGrupoP) . ")";
+            }
+        } else {
+            if (!empty($duplicadosSeguimientoPorDoc[$idDoc])) {
+                foreach ($duplicadosSeguimientoPorDoc[$idDoc] as $dSeg) {
+                    $maxVeces = max($maxVeces, (int)$dSeg['veces']);
+                    $motivos[] = $dSeg['motivo'];
+                    if (!empty($dSeg['id_doc_repetido'])) {
+                        $idsAsociados[] = (int)$dSeg['id_doc_repetido'];
+                    }
+                    $docsRelDup[] = $dSeg['doc_duplicado'] . " (" . $dSeg['veces'] . " veces)";
+                }
+                $idsAsociados = array_values(array_unique($idsAsociados));
             }
         }
 
         if (!empty($motivos)) {
             $doc['es_repetido'] = true;
+            $doc['modo_repeticion'] = $modoRepeticion;
             $doc['veces_repetido'] = $maxVeces;
             $doc['motivo_repeticion'] = implode(' | ', array_values(array_unique($motivos)));
             $doc['ids_asociados'] = implode(', ', $idsAsociados);
+            $doc['numeros_seguimiento'] = !empty($numSeguimientoPorDoc[$idDoc]) ? implode(', ', array_values($numSeguimientoPorDoc[$idDoc])) : '';
             $doc['documentos_relacionados_duplicados'] = implode(', ', array_values(array_unique($docsRelDup)));
             $documentosRepetidos[] = $doc;
         }
     }
 
     return [
+        'modo_evaluacion' => $modoRepeticion,
+        'descripcion_evaluacion' => $descripcionModo,
         'total_documentos_evaluados_en_periodo' => count($docsPeriodo),
         'total_documentos_repetidos_encontrados' => count($documentosRepetidos),
         'filtros_aplicados' => [
@@ -1977,6 +2062,430 @@ function consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters =
             'num_proceso' => $filters['num_proceso'] ?? null
         ],
         'documentos_repetidos' => $documentosRepetidos
+    ];
+}
+
+/**
+ * Determina el MIME type real de un archivo asociado a un documento (principal o adjunto)
+ * inspeccionando sus primeros bytes (magic bytes), la extensión de su nombre y el campo mime de la BD.
+ */
+function normalizarMimeArchivo($dbMime, $nombreArchivo = '', $binario = '') {
+    $head8 = substr((string)$binario, 0, 8);
+    if (strncmp($head8, '%PDF-', 5) === 0) {
+        return 'application/pdf';
+    }
+    if (strncmp($head8, "\xFF\xD8\xFF", 3) === 0) {
+        return 'image/jpeg';
+    }
+    if (strncmp($head8, "\x89PNG\r\n\x1a\n", 8) === 0) {
+        return 'image/png';
+    }
+    if (strncmp($head8, 'RIFF', 4) === 0 && substr((string)$binario, 8, 4) === 'WEBP') {
+        return 'image/webp';
+    }
+
+    $ext = strtolower(pathinfo((string)$nombreArchivo, PATHINFO_EXTENSION));
+    $mimeClean = strtolower(trim((string)$dbMime));
+    if (strpos($mimeClean, '/') !== false) {
+        $parts = explode('/', $mimeClean);
+        $extFromMime = trim((string)end($parts));
+        if ($ext === '' && $extFromMime !== '') {
+            $ext = $extFromMime;
+        }
+    } elseif ($ext === '' && $mimeClean !== '') {
+        $ext = $mimeClean;
+    }
+
+    switch ($ext) {
+        case 'pdf':
+            return 'application/pdf';
+        case 'jpg':
+        case 'jpeg':
+            return 'image/jpeg';
+        case 'png':
+            return 'image/png';
+        case 'webp':
+            return 'image/webp';
+        case 'docx':
+            return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        case 'xlsx':
+            return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        case 'txt':
+            return 'text/plain';
+        case 'csv':
+            return 'text/csv';
+        case 'html':
+        case 'htm':
+            return 'text/html';
+        default:
+            return (strpos($mimeClean, '/') !== false) ? $mimeClean : 'application/octet-stream';
+    }
+}
+
+/**
+ * Formatea un tamaño en bytes a formato legible (KB / MB).
+ */
+function formatearTamanoArchivo($bytes) {
+    $b = (int)$bytes;
+    if ($b <= 0) return '0 B';
+    if ($b < 1024) return $b . ' B';
+    if ($b < 1048576) return round($b / 1024, 1) . ' KB';
+    return round($b / 1048576, 2) . ' MB';
+}
+
+/**
+ * Extrae texto legible en PHP desde un archivo binario (PDF digital, DOCX, XLSX, TXT, CSV, HTML)
+ * como complemento/respaldo al análisis multimodal directo de Gemini (`inline_data`).
+ */
+function extraerTextoDeArchivoBinario($binario, $mimeReal, $nombreArchivo = '') {
+    $len = strlen((string)$binario);
+    if ($len === 0) {
+        return '';
+    }
+
+    $ext = strtolower(pathinfo((string)$nombreArchivo, PATHINFO_EXTENSION));
+
+    // 1. Archivos de texto plano, CSV, HTML o XML
+    if (in_array($mimeReal, ['text/plain', 'text/csv', 'text/html', 'text/xml', 'application/xml'], true) || in_array($ext, ['txt', 'csv', 'html', 'htm', 'xml'], true)) {
+        $txt = (string)$binario;
+        if (in_array($mimeReal, ['text/html', 'text/xml', 'application/xml'], true) || in_array($ext, ['html', 'htm', 'xml'], true)) {
+            $txt = strip_tags($txt);
+        }
+        $txt = @mb_convert_encoding($txt, 'UTF-8', 'UTF-8, ISO-8859-1, Windows-1252');
+        $txt = trim(preg_replace('/\s+/u', ' ', (string)$txt));
+        return mb_substr($txt, 0, 14000, 'UTF-8');
+    }
+
+    // 2. Archivos Word (.docx) o Excel (.xlsx) basados en contenedor ZIP/XML
+    if (($mimeReal === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || $ext === 'docx' ||
+         $mimeReal === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || $ext === 'xlsx') && class_exists('ZipArchive')) {
+        $tmpFile = @tempnam(sys_get_temp_dir(), 'sgd_doc_');
+        if ($tmpFile !== false) {
+            @file_put_contents($tmpFile, $binario);
+            $zip = new ZipArchive();
+            $extraido = '';
+            if ($zip->open($tmpFile) === true) {
+                if ($ext === 'docx' || strpos($mimeReal, 'wordprocessingml') !== false) {
+                    $xmlDoc = $zip->getFromName('word/document.xml');
+                    if ($xmlDoc !== false) {
+                        $xmlDoc = str_replace(['</w:p>', '<w:br/>', '<w:cr/>', '</w:tr>'], "\n", $xmlDoc);
+                        $xmlDoc = str_replace('</w:tc>', ' | ', $xmlDoc);
+                        $extraido = html_entity_decode(strip_tags($xmlDoc), ENT_QUOTES | ENT_XML1, 'UTF-8');
+                    }
+                } else {
+                    // XLSX: leer sharedStrings y hojas
+                    $shared = [];
+                    $xmlShared = $zip->getFromName('xl/sharedStrings.xml');
+                    if ($xmlShared !== false && preg_match_all('/<si>(.*?)<\/si>/s', $xmlShared, $mSi)) {
+                        foreach ($mSi[1] as $siBlock) {
+                            $shared[] = html_entity_decode(strip_tags($siBlock), ENT_QUOTES | ENT_XML1, 'UTF-8');
+                        }
+                    }
+                    $sheetXml = $zip->getFromName('xl/worksheets/sheet1.xml');
+                    if ($sheetXml !== false && preg_match_all('/<row[^>]*>(.*?)<\/row>/s', $sheetXml, $mRows)) {
+                        $lineasXls = [];
+                        foreach (array_slice($mRows[1], 0, 250) as $rowBlock) {
+                            $celdasFila = [];
+                            if (preg_match_all('/<c([^>]*)>(.*?)<\/c>/s', $rowBlock, $mCells, PREG_SET_ORDER)) {
+                                foreach ($mCells as $cellMatch) {
+                                    $attrs = $cellMatch[1];
+                                    $inner = $cellMatch[2];
+                                    if (strpos($attrs, 't="s"') !== false && preg_match('/<v>(\d+)<\/v>/', $inner, $mV)) {
+                                        $idxS = (int)$mV[1];
+                                        $celdasFila[] = $shared[$idxS] ?? '';
+                                    } else {
+                                        $celdasFila[] = trim(html_entity_decode(strip_tags($inner), ENT_QUOTES | ENT_XML1, 'UTF-8'));
+                                    }
+                                }
+                            }
+                            $lineaLimpia = implode(' | ', array_filter($celdasFila, function ($v) { return $v !== ''; }));
+                            if ($lineaLimpia !== '') {
+                                $lineasXls[] = $lineaLimpia;
+                            }
+                        }
+                        $extraido = implode("\n", $lineasXls);
+                    }
+                }
+                $zip->close();
+            }
+            @unlink($tmpFile);
+            $extraido = trim(preg_replace('/[ \t]+/u', ' ', $extraido));
+            return mb_substr($extraido, 0, 14000, 'UTF-8');
+        }
+    }
+
+    // 3. Archivos PDF: descompresión de streams FlateDecode y extracción de cadenas de texto
+    if ($mimeReal === 'application/pdf' || strncmp(substr((string)$binario, 0, 5), '%PDF-', 5) === 0) {
+        $fragmentos = [];
+        if (preg_match_all('/stream[\r\n]+(.*?)[\r\n]+endstream/s', (string)$binario, $mStreams)) {
+            foreach (array_slice($mStreams[1], 0, 120) as $rawStream) {
+                $decoded = @gzuncompress($rawStream);
+                if ($decoded === false) {
+                    $decoded = @gzinflate($rawStream);
+                }
+                if ($decoded === false || !is_string($decoded) || $decoded === '') {
+                    // Si el stream no estaba comprimido pero contiene operadores de texto PDF
+                    if (strpos($rawStream, 'Tj') !== false || strpos($rawStream, 'TJ') !== false) {
+                        $decoded = $rawStream;
+                    } else {
+                        continue;
+                    }
+                }
+
+                // Extraer cadenas entre paréntesis (...) asociadas a bloques de texto PDF
+                if (preg_match_all('/\(((?:\\\\.|[^\\\\()])+)\)\s*(?:Tj|\'|"|(?:\-?\d+(?:\.\d+)?\s*)?)/s', $decoded, $mParen)) {
+                    foreach ($mParen[1] as $strP) {
+                        $strP = strtr($strP, [
+                            '\\(' => '(',
+                            '\\)' => ')',
+                            '\\\\' => '\\',
+                            '\\n' => "\n",
+                            '\\r' => ' ',
+                            '\\t' => ' '
+                        ]);
+                        $strP = preg_replace_callback('/\\\\([0-7]{1,3})/', function ($mOct) {
+                            return chr(octdec($mOct[1]));
+                        }, $strP);
+                        $strUtf = @mb_convert_encoding($strP, 'UTF-8', 'UTF-8, ISO-8859-1, Windows-1252');
+                        $strUtf = preg_replace('/[^\P{C}\n\t]/u', '', (string)$strUtf);
+                        if (trim($strUtf) !== '' && preg_match('/[\p{L}\p{N}]{2,}/u', $strUtf)) {
+                            $fragmentos[] = $strUtf;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!empty($fragmentos)) {
+            $textoPdf = implode(' ', $fragmentos);
+            $textoPdf = trim(preg_replace('/\s+/u', ' ', $textoPdf));
+            return mb_substr($textoPdf, 0, 14000, 'UTF-8');
+        }
+    }
+
+    return '';
+}
+
+/**
+ * Accede al documento solicitado y a TODOS sus archivos asociados en la base de datos:
+ * 1. El archivo principal cargado en la tabla `documento` (`d.nombre_documento`, `d.mime_documento`, `d.documento`).
+ * 2. Todos los archivos adjuntos asociados en la tabla `adjunto` (`a.nombre_adjunto`, `a.mime_adjunto`, `a.archivo_adjunto`).
+ * 3. Las anotaciones de `bitacora`, `accion`/`actividad` y el contexto de `seguimiento`.
+ * Prepara tanto las partes multimodales (`inline_data` base64 para que Gemini lea directamente PDFs e imágenes,
+ * incluidos documentos escaneados con OCR nativo) como el texto extraído localmente y metadatos completos.
+ */
+function consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $filters = [], $keywords = [], $customVars = [], $usuariosContrato = [], &$inlinePartsOut = []) {
+    $inlinePartsOut = [];
+    $filtersBase = $filters;
+    $filtersBase['limite'] = 5;
+
+    // Si busca un documento puntual por código/número o providencia, limpiar filtros accesorios que puedan ocultar el documento
+    if (!empty($filtersBase['doc_numero']) || !empty($filtersBase['num_providencia'])) {
+        $filtersBase['estado_doc'] = null;
+        $filtersBase['anio'] = null;
+        $filtersBase['mes'] = null;
+        $filtersBase['fecha_desde'] = null;
+        $filtersBase['fecha_hasta'] = null;
+        $filtersBase['tipo_documento'] = null;
+        $filtersBase['materia'] = null;
+        $keywords = [];
+    }
+
+    $docsEncontrados = buscarDocumentosPorVariables($cnx, $userContractId, $userId, $filtersBase, $keywords, $customVars, $usuariosContrato);
+    if (isset($docsEncontrados['error'])) {
+        return ['error' => $docsEncontrados['error']];
+    }
+
+    if (empty($docsEncontrados)) {
+        return [
+            'documento_encontrado' => false,
+            'criterio_buscado' => $filters['doc_numero'] ?? ($filters['num_providencia'] ?? ($filters['doc_nombre'] ?? ($filters['materia'] ?? ''))),
+            'documentos_analizados' => []
+        ];
+    }
+
+    $mimesSoportadosGeminiInline = [
+        'application/pdf',
+        'image/jpeg',
+        'image/png',
+        'image/webp'
+    ];
+    $maxBytesInlineTotal = 14 * 1024 * 1024; // 14 MB máximo acumulado para envío inline a Gemini
+    $bytesInlineAcumulados = 0;
+
+    // Si se buscó por un código específico de documento y el primero coincide, priorizamos analizar los primeros 2 resultados más relevantes
+    $maxDocsAnalizar = !empty($filters['doc_numero']) ? 2 : 3;
+    $documentosAnalizados = [];
+
+    foreach (array_slice($docsEncontrados, 0, $maxDocsAnalizar) as $idxDoc => $docMeta) {
+        $idDoc = (int)$docMeta['id_documento'];
+        $etiquetaDoc = trim(($docMeta['tipo_documento'] ?? 'Documento') . ' ' . ($docMeta['num_documento'] ?? ('ID ' . $idDoc)));
+
+        // 1. Obtener el archivo binario principal de la tabla `documento`
+        $rowsBinDoc = ejecutarSelect(
+            $cnx,
+            "SELECT nombre_documento, mime_documento, tamano_documento, documento
+             FROM documento
+             WHERE id_documento = ?
+             LIMIT 1",
+            [$idDoc],
+            "i"
+        );
+
+        $infoArchivoPrincipal = [
+            'tiene_archivo_cargado' => false,
+            'nombre_archivo' => $docMeta['nombre_documento'] ?? '',
+            'mime_type' => '',
+            'tamano_bytes' => 0,
+            'tamano_legible' => '0 B',
+            'enviado_a_ia_multimodal' => false,
+            'texto_extraido_local' => '',
+            'url_descarga' => "negocio/descargarDocumento.php?idDocumento={$idDoc}"
+        ];
+
+        if (is_array($rowsBinDoc) && !isset($rowsBinDoc['error']) && !empty($rowsBinDoc[0])) {
+            $rBin = $rowsBinDoc[0];
+            $binContent = (string)($rBin['documento'] ?? '');
+            $lenBin = strlen($binContent);
+            $nomArchivo = trim((string)($rBin['nombre_documento'] ?? ''));
+            $mimeReal = normalizarMimeArchivo($rBin['mime_documento'] ?? '', $nomArchivo, $binContent);
+
+            $infoArchivoPrincipal['nombre_archivo'] = $nomArchivo;
+            $infoArchivoPrincipal['mime_type'] = $mimeReal;
+            $infoArchivoPrincipal['tamano_bytes'] = $lenBin > 0 ? $lenBin : (int)($rBin['tamano_documento'] ?? 0);
+            $infoArchivoPrincipal['tamano_legible'] = formatearTamanoArchivo($infoArchivoPrincipal['tamano_bytes']);
+
+            if ($lenBin > 0) {
+                $infoArchivoPrincipal['tiene_archivo_cargado'] = true;
+                $infoArchivoPrincipal['texto_extraido_local'] = extraerTextoDeArchivoBinario($binContent, $mimeReal, $nomArchivo);
+
+                if (in_array($mimeReal, $mimesSoportadosGeminiInline, true) && ($bytesInlineAcumulados + $lenBin) <= $maxBytesInlineTotal) {
+                    $inlinePartsOut[] = [
+                        'text' => "=== ARCHIVO PRINCIPAL DEL DOCUMENTO ({$etiquetaDoc} | ID: {$idDoc} | Nombre de archivo: {$nomArchivo}) ==="
+                    ];
+                    $inlinePartsOut[] = [
+                        'inline_data' => [
+                            'mime_type' => $mimeReal,
+                            'data' => base64_encode($binContent)
+                        ]
+                    ];
+                    $bytesInlineAcumulados += $lenBin;
+                    $infoArchivoPrincipal['enviado_a_ia_multimodal'] = true;
+                }
+            }
+        }
+
+        // 2. Obtener todos los archivos adjuntos asociados al documento en la tabla `adjunto`
+        $rowsAdj = ejecutarSelect(
+            $cnx,
+            "SELECT id_adjunto, nombre_adjunto, mime_adjunto, tamano_adjunto, archivo_adjunto
+             FROM adjunto
+             WHERE id_documento = ?
+             ORDER BY id_adjunto ASC",
+            [$idDoc],
+            "i"
+        );
+
+        $listaAdjuntos = [];
+        if (is_array($rowsAdj) && !isset($rowsAdj['error'])) {
+            foreach ($rowsAdj as $rAdj) {
+                $idAdj = (int)$rAdj['id_adjunto'];
+                $nomAdj = trim((string)($rAdj['nombre_adjunto'] ?? ('adjunto_' . $idAdj)));
+                $binAdj = (string)($rAdj['archivo_adjunto'] ?? '');
+                $lenAdj = strlen($binAdj);
+                $mimeAdj = normalizarMimeArchivo($rAdj['mime_adjunto'] ?? '', $nomAdj, $binAdj);
+                $tamAdjBytes = $lenAdj > 0 ? $lenAdj : (int)($rAdj['tamano_adjunto'] ?? 0);
+
+                $itemAdj = [
+                    'id_adjunto' => $idAdj,
+                    'nombre_adjunto' => $nomAdj,
+                    'mime_type' => $mimeAdj,
+                    'tamano_bytes' => $tamAdjBytes,
+                    'tamano_legible' => formatearTamanoArchivo($tamAdjBytes),
+                    'tiene_contenido' => ($lenAdj > 0),
+                    'enviado_a_ia_multimodal' => false,
+                    'texto_extraido_local' => '',
+                    'url_descarga' => "negocio/descargarDocumento.php?idAdjunto={$idAdj}"
+                ];
+
+                if ($lenAdj > 0) {
+                    $itemAdj['texto_extraido_local'] = extraerTextoDeArchivoBinario($binAdj, $mimeAdj, $nomAdj);
+                    if (in_array($mimeAdj, $mimesSoportadosGeminiInline, true) && ($bytesInlineAcumulados + $lenAdj) <= $maxBytesInlineTotal) {
+                        $inlinePartsOut[] = [
+                            'text' => "=== ARCHIVO ADJUNTO ASOCIADO AL DOCUMENTO ({$etiquetaDoc} | Adjunto ID: {$idAdj} | Nombre: {$nomAdj}) ==="
+                        ];
+                        $inlinePartsOut[] = [
+                            'inline_data' => [
+                                'mime_type' => $mimeAdj,
+                                'data' => base64_encode($binAdj)
+                            ]
+                        ];
+                        $bytesInlineAcumulados += $lenAdj;
+                        $itemAdj['enviado_a_ia_multimodal'] = true;
+                    }
+                }
+
+                $listaAdjuntos[] = $itemAdj;
+            }
+        }
+
+        // 3. Obtener el historial de bitácora / respuestas asociadas al documento en `bitacora`
+        $rowsBit = ejecutarSelect(
+            $cnx,
+            "SELECT id_bitacora, emisor, fecha_emision, asunto, detalle_respuesta
+             FROM bitacora
+             WHERE id_documento = ?
+             ORDER BY fecha_emision ASC, id_bitacora ASC",
+            [$idDoc],
+            "i"
+        );
+        $listaBitacora = [];
+        if (is_array($rowsBit) && !isset($rowsBit['error'])) {
+            foreach ($rowsBit as $rb) {
+                $listaBitacora[] = [
+                    'emisor' => trim((string)($rb['emisor'] ?? '')),
+                    'fecha_emision' => trim((string)($rb['fecha_emision'] ?? '')),
+                    'asunto' => trim((string)($rb['asunto'] ?? '')),
+                    'detalle_respuesta' => trim((string)($rb['detalle_respuesta'] ?? ''))
+                ];
+            }
+        }
+
+        // 4. Obtener las acciones / actividades requeridas asociadas al documento en `accion` + `actividad`
+        $rowsAcc = ejecutarSelect(
+            $cnx,
+            "SELECT ac.id_actividad, act.actividad
+             FROM accion ac
+             LEFT JOIN actividad act ON ac.id_actividad = act.id_actividad
+             WHERE ac.id_documento = ?",
+            [$idDoc],
+            "i"
+        );
+        $listaAcciones = [];
+        if (is_array($rowsAcc) && !isset($rowsAcc['error'])) {
+            foreach ($rowsAcc as $rac) {
+                $nomAct = trim((string)($rac['actividad'] ?? ''));
+                if ($nomAct !== '' && !in_array($nomAct, $listaAcciones, true)) {
+                    $listaAcciones[] = $nomAct;
+                }
+            }
+        }
+
+        $documentosAnalizados[] = [
+            'metadatos_documento' => $docMeta,
+            'archivo_principal' => $infoArchivoPrincipal,
+            'cantidad_archivos_adjuntos' => count($listaAdjuntos),
+            'archivos_adjuntos' => $listaAdjuntos,
+            'bitacora_respuestas' => $listaBitacora,
+            'acciones_requeridas' => $listaAcciones
+        ];
+    }
+
+    return [
+        'documento_encontrado' => true,
+        'criterio_buscado' => $filters['doc_numero'] ?? ($filters['num_providencia'] ?? ($filters['doc_nombre'] ?? '')),
+        'total_documentos_coincidentes' => count($docsEncontrados),
+        'documentos_analizados' => $documentosAnalizados
     ];
 }
 
@@ -2050,11 +2559,18 @@ function extraerJsonDeTexto($texto) {
     return null;
 }
 
-// Helper para llamar a Gemini con resolución IPv4 forzada y fallback automático de modelo ante timeout
-function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25) {
+// Helper para llamar a Gemini con resolución IPv4 forzada, soporte multimodal (`inline_data`) y fallback automático de modelo ante timeout
+function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25, $inlineParts = []) {
     $primaryModel = defined('GEMINI_MODEL') ? GEMINI_MODEL : 'gemini-flash-latest';
     $modelsToTry = array_values(array_unique([$primaryModel, 'gemini-2.0-flash', 'gemini-1.5-flash']));
     $lastError = 'Error desconocido al conectar con Gemini';
+
+    $parts = [['text' => $prompt]];
+    if (!empty($inlineParts) && is_array($inlineParts)) {
+        foreach ($inlineParts as $ip) {
+            $parts[] = $ip;
+        }
+    }
 
     foreach ($modelsToTry as $idx => $model) {
         $url = 'https://generativelanguage.googleapis.com/v1beta/models/' . $model . ':generateContent?key=' . $apiKey;
@@ -2062,9 +2578,7 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25) {
         $data = [
             'contents' => [
                 [
-                    'parts' => [
-                        ['text' => $prompt]
-                    ]
+                    'parts' => $parts
                 ]
             ],
             'generationConfig' => [
@@ -2080,7 +2594,7 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25) {
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_TIMEOUT, $idx === 0 ? $timeoutSec : 20);
+        curl_setopt($ch, CURLOPT_TIMEOUT, $idx === 0 ? $timeoutSec : max(20, (int)round($timeoutSec * 0.75)));
         if (defined('CURL_IPRESOLVE_V4')) {
             curl_setopt($ch, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
         }
@@ -2102,6 +2616,10 @@ function llamarGemini($apiKey, $prompt, $jsonMode = false, $timeoutSec = 25) {
 
         if ($httpCode !== 200) {
             $lastError = 'API returned HTTP code ' . $httpCode . '. Response: ' . $response;
+            if ($httpCode === 400 && !empty($inlineParts)) {
+                error_log("Advertencia HTTP 400 en Gemini con inline_data. Reintentando con texto extraído en PHP...");
+                return llamarGemini($apiKey, $prompt, $jsonMode, $timeoutSec, []);
+            }
             if ($httpCode === 429 || $httpCode >= 500 || $httpCode === 404) {
                 error_log("Advertencia HTTP {$httpCode} en Gemini ({$model}). Probando siguiente modelo...");
                 continue;
@@ -2167,24 +2685,82 @@ function registrarConsumoIA($cnx, $idContrato, $idUsuario, $modelo, $intent, $to
  * Formatea una respuesta clara en Markdown directamente en PHP si la API externa de IA
  * llegara a presentar intermitencia o timeout en el Paso 2.
  */
-function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters = [], $esConsultaRelacionados = false, $esConsultaRepetidos = false) {
+function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters = [], $esConsultaRelacionados = false, $esConsultaRepetidos = false, $esConsultaContenidoArchivo = false) {
+    if ($esConsultaContenidoArchivo && isset($dbResults['analisis_contenido_documento'])) {
+        $ac = $dbResults['analisis_contenido_documento'];
+        if (empty($ac['documento_encontrado']) || empty($ac['documentos_analizados'])) {
+            $crit = $ac['criterio_buscado'] ?: ($filters['doc_numero'] ?? 'indicado');
+            return "No se encontró ningún documento con el número o código **{$crit}** dentro del contrato **{$userContractName}**.";
+        }
+        $md = "### Resumen e Información del Documento y sus Archivos Asociados — Contrato **{$userContractName}**\n\n";
+        foreach ($ac['documentos_analizados'] as $item) {
+            $d = $item['metadatos_documento'];
+            $ap = $item['archivo_principal'];
+            $md .= "#### **{$d['tipo_documento']} N° {$d['num_documento']}** (ID: {$d['id_documento']})\n";
+            $md .= "- **Materia / Asunto:** {$d['materia']}\n";
+            if (!empty($d['antecedente'])) {
+                $md .= "- **Antecedente:** {$d['antecedente']}\n";
+            }
+            if (!empty($d['comentario'])) {
+                $md .= "- **Comentario / Observación:** {$d['comentario']}\n";
+            }
+            $md .= "- **Fecha Documento:** {$d['fecha_documento']} | **Fecha Recepción:** {$d['fecha_recepcion']} | **Estado:** {$d['estado_documento']} | **Flujo:** {$d['flujo_documento']}\n";
+            $md .= "- **Remitente:** {$d['remitente']}" . (!empty($d['cargo_remitente']) ? " ({$d['cargo_remitente']})" : "") . "\n";
+            $md .= "- **Destinatario:** {$d['destinatario']}" . (!empty($d['cargo_destinatario']) ? " ({$d['cargo_destinatario']})" : "") . "\n";
+            $md .= "- **Responsable:** {$d['responsable']} | **Código de Proceso:** {$d['num_proceso']}\n";
+            $md .= "- **Archivo Principal Asociado:** " . ($ap['tiene_archivo_cargado'] ? "`{$ap['nombre_archivo']}` ({$ap['mime_type']}, {$ap['tamano_legible']}) — [Descargar Archivo Principal]({$ap['url_descarga']})" : "Sin archivo binario cargado") . "\n";
+
+            if (!empty($ap['texto_extraido_local'])) {
+                $extracto = mb_substr($ap['texto_extraido_local'], 0, 1200, 'UTF-8');
+                $md .= "\n**Extracto del contenido del archivo:**\n> " . str_replace("\n", "\n> ", $extracto) . "\n";
+            }
+
+            if (!empty($item['archivos_adjuntos'])) {
+                $md .= "\n**Archivos Adjuntos Asociados (" . count($item['archivos_adjuntos']) . "):**\n";
+                foreach ($item['archivos_adjuntos'] as $adj) {
+                    $md .= "- `{$adj['nombre_adjunto']}` ({$adj['mime_type']}, {$adj['tamano_legible']}) — [Descargar Adjunto]({$adj['url_descarga']})\n";
+                }
+            }
+            if (!empty($item['bitacora_respuestas'])) {
+                $md .= "\n**Bitácora de Respuestas / Gestión:**\n";
+                foreach ($item['bitacora_respuestas'] as $bit) {
+                    $md .= "- **{$bit['fecha_emision']} ({$bit['emisor']}):** {$bit['asunto']} — {$bit['detalle_respuesta']}\n";
+                }
+            }
+            $md .= "\n";
+        }
+        return $md;
+    }
     if ($esConsultaRepetidos && isset($dbResults['analisis_documentos_repetidos'])) {
         $rep = $dbResults['analisis_documentos_repetidos'];
+        $modoEv = $rep['modo_evaluacion'] ?? 'contrato';
         $totEval = (int)($rep['total_documentos_evaluados_en_periodo'] ?? 0);
         $totRep = (int)($rep['total_documentos_repetidos_encontrados'] ?? 0);
-        $md = "### Análisis de Documentos Repetidos / Duplicados — Contrato **{$userContractName}**\n\n";
-        $md .= "- **Total de documentos evaluados en el período/criterio:** **{$totEval}**\n";
-        $md .= "- **Total de documentos repetidos/duplicados detectados:** **{$totRep}**\n\n";
+
+        if ($modoEv === 'seguimiento') {
+            $md = "### Análisis de Documentos de Seguimiento Repetidos — Contrato **{$userContractName}**\n\n";
+            $md .= "- **Total de documentos del contrato evaluados:** **{$totEval}**\n";
+            $md .= "- **Documentos con registros de seguimiento repetidos:** **{$totRep}**\n\n";
+        } else {
+            $md = "### Análisis de Documentos Repetidos Asociados al Contrato — Contrato **{$userContractName}**\n\n";
+            $md .= "- **Total de documentos del contrato evaluados:** **{$totEval}**\n";
+            $md .= "- **Total de documentos repetidos en el contrato (por N° Documento / Providencia):** **{$totRep}**\n\n";
+        }
 
         if (empty($rep['documentos_repetidos'])) {
-            $md .= "No se detectaron documentos repetidos o duplicados que cumplan con los criterios consultados.";
+            $md .= ($modoEv === 'seguimiento')
+                ? "No se detectaron documentos que tengan documentos de seguimiento repetidos en el contrato."
+                : "No se detectaron documentos repetidos asociados al contrato que cumplan con los criterios consultados.";
             return $md;
         }
 
         foreach (array_slice($rep['documentos_repetidos'], 0, 25) as $idx => $d) {
             $n = $idx + 1;
             $md .= "{$n}. **{$d['tipo_documento']} N° {$d['num_documento']}** (ID: {$d['id_documento']} | Providencia: {$d['num_providencia']})\n";
-            $md .= "   - **Motivo de repetición:** **{$d['motivo_repeticion']}**\n";
+            if ($modoEv === 'seguimiento' && !empty($d['documentos_relacionados_duplicados'])) {
+                $md .= "   - **Documentos de seguimiento repetidos:** **{$d['documentos_relacionados_duplicados']}**\n";
+            }
+            $md .= "   - **Detalle de repetición:** **{$d['motivo_repeticion']}**\n";
             $md .= "   - **Materia:** {$d['materia']}\n";
             $md .= "   - **Fecha Documento:** {$d['fecha_documento']} | **Estado:** {$d['estado_documento']} | **Responsable:** {$d['responsable']}\n";
             $md .= "   - [Descargar Documento](negocio/descargarDocumento.php?idDocumento={$d['id_documento']})\n\n";
@@ -2433,8 +3009,9 @@ function construirDatosExcelSolicitados($dbResults, $intent, $filters, $esConsul
 
     $columnasPersonalizadas = extraerColumnasExcelSolicitadas($query, $filters['columnas_excel'] ?? []);
 
-    // CASO 0: Consulta de Documentos Repetidos / Duplicados (ej. "documentos repetidos del mes de septiembre del año 2026")
+    // CASO 0: Consulta de Documentos Repetidos / Duplicados (diferenciando entre 'contrato' y 'seguimiento')
     if (isset($dbResults['analisis_documentos_repetidos'])) {
+        $modoEv = $dbResults['analisis_documentos_repetidos']['modo_evaluacion'] ?? 'contrato';
         $docsRep = $dbResults['analisis_documentos_repetidos']['documentos_repetidos'] ?? [];
         $colsUsar = !empty($columnasPersonalizadas)
             ? $columnasPersonalizadas
@@ -2458,9 +3035,16 @@ function construirDatosExcelSolicitados($dbResults, $intent, $filters, $esConsul
         foreach ($colsUsar as $ck) {
             $headers[] = $etiquetasColumnasDoc[$ck] ?? $ck;
         }
-        $headers[] = 'Veces Repetido';
-        $headers[] = 'Motivo de Repetición / Duplicidad';
-        $headers[] = 'IDs Involucrados';
+        if ($modoEv === 'seguimiento') {
+            $headers[] = 'N° Seguimiento';
+            $headers[] = 'Documentos de Seguimiento Repetidos';
+            $headers[] = 'Veces Repetido en Seguimiento';
+            $headers[] = 'Detalle Repetición en Seguimiento';
+        } else {
+            $headers[] = 'Veces Repetido en Contrato';
+            $headers[] = 'Motivo de Repetición (N° Doc / Providencia)';
+            $headers[] = 'IDs Documentos Repetidos';
+        }
 
         $rows = [];
         foreach ($docsRep as $d) {
@@ -2468,15 +3052,24 @@ function construirDatosExcelSolicitados($dbResults, $intent, $filters, $esConsul
             foreach ($colsUsar as $ck) {
                 $fila[] = $d[$ck] ?? '';
             }
-            $fila[] = (int)($d['veces_repetido'] ?? 2);
-            $fila[] = $d['motivo_repeticion'] ?? '';
-            $fila[] = $d['ids_asociados'] ?? '';
+            if ($modoEv === 'seguimiento') {
+                $fila[] = $d['numeros_seguimiento'] ?? '';
+                $fila[] = $d['documentos_relacionados_duplicados'] ?? '';
+                $fila[] = (int)($d['veces_repetido'] ?? 2);
+                $fila[] = $d['motivo_repeticion'] ?? '';
+            } else {
+                $fila[] = (int)($d['veces_repetido'] ?? 2);
+                $fila[] = $d['motivo_repeticion'] ?? '';
+                $fila[] = $d['ids_asociados'] ?? '';
+            }
             $rows[] = $fila;
         }
 
         return [
-            'sheet_title' => 'Documentos Repetidos',
-            'filename'    => 'Documentos_Repetidos_SGD_' . date('Ymd_His') . '.xlsx',
+            'sheet_title' => ($modoEv === 'seguimiento') ? 'Seguimiento Repetidos' : 'Docs Repetidos Contrato',
+            'filename'    => ($modoEv === 'seguimiento')
+                ? ('Documentos_Seguimiento_Repetidos_SGD_' . date('Ymd_His') . '.xlsx')
+                : ('Documentos_Repetidos_Contrato_SGD_' . date('Ymd_His') . '.xlsx'),
             'headers'     => $headers,
             'rows'        => $rows
         ];
@@ -2827,15 +3420,35 @@ $generarExcelPre = (bool)preg_match(
     $query
 );
 
-// Detectar de forma determinista en PHP si el usuario consulta por documentos relacionados, seguimiento o duplicados en documentos relacionados de un documento específico
+// Detectar de forma determinista en PHP si el usuario consulta por documentos repetidos o duplicados (incluyendo errores comunes de tipeo como "respetidos" o "repeditos")
+$mencionaRepeticionPre = (bool)preg_match(
+    '/\b(re(?:s)?petid[oa]s?|repedit[oa]s?|duplicad[oa]s?|est[aá]n?\s+re(?:s)?petid[oa]s?|est[aá]n?\s+duplicad[oa]s?|se\s+repiten?|m[aá]s\s+de\s+una\s+vez)\b/iu',
+    $query
+);
+
+// Detectar si el usuario menciona seguimiento o documentos relacionados en su consulta
+$mencionaSeguimientoORelacionadosPre = (bool)preg_match(
+    '/\b(seguimientos?|documentos?\s+de\s+seguimiento|documentos?\s+relacionad[oa]s?|en\s+el\s+seguimiento)\b/iu',
+    $query
+);
+
+// Determinar el modo de repetición cuando se consulta por documentos repetidos/duplicados a nivel de contrato o período:
+// - 'seguimiento': cuando pide documentos de seguimiento repetidos en los documentos del contrato (ej. "Podrías decirme si hay documentos de seguimiento respetidos en los documentos de mi contrato")
+// - 'contrato': cuando pide los documentos repetidos asociados directamente al contrato (ej. "Podrías decirme los documentos repetidos del contrato")
+$modoRepeticionPre = ($mencionaRepeticionPre && $mencionaSeguimientoORelacionadosPre) ? 'seguimiento' : 'contrato';
+
+// Detectar de forma determinista en PHP si el usuario consulta por documentos relacionados o seguimiento de un documento específico
 $esConsultaRelacionadosPre = (bool)preg_match(
     '/\b(documentos?\s+relacionad[oa]s?|relacionad[oa]s?\s+(?:con|a|de|al|tiene|duplicad[oa]s?)|tiene\s+(?:documentos?\s+)?relacionad[oa]s?|duplicad[oa]s?\s+(?:en\s+)?(?:el\s+)?(?:seguimiento|relacionad[oa]s?)|seguimiento\s+(?:de|del|para)\s+(?:la\s+|el\s+)?(?:carta|oficio|informe|documento|memor[aá]ndum|resoluci[oó]n))\b/iu',
     $query
 );
 
-// Detectar de forma determinista en PHP si el usuario consulta por documentos repetidos o duplicados en general o en un mes/año/criterio
-$esConsultaRepetidosPre = !$esConsultaRelacionadosPre && (bool)preg_match(
-    '/\b(repetid[oa]s?|duplicad[oa]s?|est[aá]n?\s+repetid[oa]s?|est[aá]n?\s+duplicad[oa]s?|se\s+repiten?|m[aá]s\s+de\s+una\s+vez)\b/iu',
+// Detectar de forma determinista en PHP si el usuario consulta por documentos repetidos o duplicados en general (ya sea del contrato o de seguimiento del contrato)
+$esConsultaRepetidosPre = $mencionaRepeticionPre;
+
+// Detectar de forma determinista en PHP si el usuario pide un resumen, síntesis, lectura, explicación o información de los archivos asociados a un documento
+$esConsultaContenidoArchivoPre = !$esConsultaRelacionadosPre && !$esConsultaRepetidosPre && (bool)preg_match(
+    '/\b(resumen(?:to)?|resumir|res[uú]me(?:me|lo|la)?|s[ií]ntesis|sintetiza(?:r)?|de\s+qu[eé]\s+trata|qu[eé]\s+trata|qu[eé]\s+dice|qu[eé]\s+contiene|contenido\s+(?:de|del)|explica(?:r|me)?\s+(?:el|la)|analiza(?:r)?\s+(?:el|la)|lee(?:r)?\s+(?:el|la)|archivos?\s+asociad[oa]s?|adjuntos?\s+(?:de|del|asociad[oa]s?)|anexos?\s+(?:de|del|asociad[oa]s?)|informaci[oó]n\s+(?:sobre|de|del|acerca\s+de)\s+(?:el\s+|la\s+)?(?:documento|carta|oficio|informe|archivo|ord))\b/iu',
     $query
 );
 
@@ -2850,9 +3463,14 @@ if (preg_match('/\b(?:n[uú]mero|nro\.?|n[°ºo]|c[oó]digo)?\s*(?:de\s+|del\s+)
     $numProcesoExplicitoDetectado = trim($mProcDots[1]);
 }
 
-// Extraer de forma determinista en PHP códigos/números de documento como "SCINC/IF/1140/2026" o "1140/2026"
+// Extraer de forma determinista en PHP códigos/números de documento como "ORD.IF : N°1348/2026", "SCINC/IF/1140/2026" o "1140/2026"
 $docNumeroExplicitoDetectado = null;
-if (preg_match('/\b([A-Z0-9_.\-]{1,30}(?:\/[A-Z0-9_.\-]{1,30})+)\b/iu', $query, $mCodeSlash)) {
+if (preg_match('/\b([A-Z]{2,15}(?:[.\-\/][A-Z0-9]{1,15})*\s*(?::\s*)?(?:N[°ºo]\.?|NRO\.?)?\s*[0-9]+\/[0-9]{2,4})\b/iu', $query, $mCompositeCode)) {
+    $candComp = trim($mCompositeCode[1]);
+    // Evitar incluir sustantivos genéricos iniciales como "documento 1140/2026" o "carta 1140/2026"
+    $candComp = preg_replace('/^(?:documento|carta|oficio|informe|providencia|memor[aá]ndum|resoluci[oó]n)\s+/iu', '', $candComp);
+    $docNumeroExplicitoDetectado = trim($candComp);
+} elseif (preg_match('/\b([A-Z0-9_.\-]{1,30}(?:\/[A-Z0-9_.\-]{1,30})+)\b/iu', $query, $mCodeSlash)) {
     // Evitar confundir una fecha completa DD/MM/YYYY con un número de documento
     if (!preg_match('/^\d{1,2}\/\d{1,2}\/\d{2,4}$/', $mCodeSlash[1])) {
         $docNumeroExplicitoDetectado = trim($mCodeSlash[1]);
@@ -2928,9 +3546,11 @@ Debes retornar EXCLUSIVAMENTE un objeto JSON estructurado con las siguientes cla
   - 'doc_nombre': string o null (si se busca un nombre de archivo específico)
   - 'num_proceso': string o null (si se busca o cuenta por número/código de proceso específico, ej. '4.2.0.0')
   - 'num_providencia': string o null (si se busca o cuenta por un número de providencia específico)
-  - 'doc_numero': string o null (si se menciona algún código o número de documento general, ej. 'SCINC/IF/1140/2026' o '1140/2026', que NO sea un código de proceso)
-  - 'es_consulta_relacionados': boolean (true si el usuario pregunta si un documento específico tiene documentos relacionados, cuántos documentos relacionados tiene, cuáles son sus documentos relacionados/seguimiento, o si tiene documentos relacionados duplicados; false en otro caso)
-  - 'es_consulta_repetidos': boolean (true si el usuario pide evaluar, buscar, contar, listar o exportar documentos repetidos o duplicados en un mes, año, proceso o contrato; false si consulta por un documento específico en 'es_consulta_relacionados')
+  - 'doc_numero': string o null (si se menciona algún código o número de documento general, ej. 'ORD.IF : N°1348/2026', 'SCINC/IF/1140/2026' o '1140/2026', que NO sea un código de proceso)
+  - 'es_consulta_relacionados': boolean (true SOLO si el usuario pregunta sobre un documento ESPECÍFICO indicando su código/número ej. 'SCINC/IF/1140/2026' o '1140/2026' para saber si ese documento puntual tiene documentos relacionados, cuántos tiene o si tiene documentos relacionados duplicados; false si pregunta en general por todos los documentos del contrato o de un período sin indicar un código de documento específico)
+  - 'es_consulta_repetidos': boolean (true si el usuario pide evaluar, buscar, contar, listar o exportar documentos repetidos o duplicados en el contrato, mes, año o proceso, ya sean los documentos propios del contrato o los documentos de seguimiento repetidos en los documentos del contrato; false si consulta por un documento específico en 'es_consulta_relacionados')
+  - 'modo_repeticion': string o null ('seguimiento' si el usuario pregunta si hay documentos de seguimiento repetidos/duplicados en los documentos del contrato; 'contrato' si pregunta por los documentos repetidos asociados al contrato sin referirse a documentos de seguimiento; null si no es consulta de repetidos)
+  - 'es_consulta_contenido_archivo': boolean (true si el usuario pide un resumen, síntesis, lectura, explicación, de qué trata, qué dice o información de los archivos/adjuntos asociados a un documento específico como 'ORD.IF : N°1348/2026'; false en otro caso)
   - 'estado_doc': int o null (1 si pide documentos 'pendiente' o 'pendientes', 2 si pide documentos 'cerrado' o 'cerrados', null si pregunta por el paso de pendiente a cerrado o en general)
   - 'flujo_doc': int o null (1 si pide documentos de 'entrada', 2 si pide documentos de 'salida', null en otro caso)
   - 'solo_mis_documentos': boolean (true SOLO si el usuario pide explícitamente 'mis documentos' en primera persona, false cuando pregunta por otro responsable del contrato como 'Jefe Asesoria')
@@ -3001,17 +3621,34 @@ if (!empty($fechasExplicitasEnQuery)) {
     }
 }
 
-// Detectar si es consulta sobre documentos relacionados / seguimiento / duplicados de un documento específico
-$esConsultaRelacionados = !empty($filters['es_consulta_relacionados']) || $esConsultaRelacionadosPre;
-// Si menciona "repetidos" o "duplicados" sin haber indicado un documento puntual ni la frase "documentos relacionados", es una consulta general de documentos repetidos/duplicados
-if ($esConsultaRepetidosPre && empty($filters['doc_numero']) && !$esConsultaRelacionadosPre) {
+// Detectar si el usuario especificó un documento puntual (por número, providencia o nombre de archivo)
+$tieneDocumentoEspecifico = !empty($filters['doc_numero']) || !empty($filters['num_providencia']) || !empty($filters['doc_nombre']);
+
+// Detectar si es consulta sobre documentos relacionados / seguimiento / duplicados de un DOCUMENTO ESPECÍFICO
+// (Si no indicó un documento puntual y pregunta por repetidos/duplicados del contrato o en el seguimiento de los documentos del contrato, va a consultarDocumentosRepetidos)
+$esConsultaRelacionados = (!empty($filters['es_consulta_relacionados']) || $esConsultaRelacionadosPre) && ($tieneDocumentoEspecifico || !$esConsultaRepetidosPre);
+if ($esConsultaRepetidosPre && !$tieneDocumentoEspecifico) {
     $esConsultaRelacionados = false;
 }
 $filters['es_consulta_relacionados'] = $esConsultaRelacionados;
 
-// Detectar si es consulta general de evaluación de documentos repetidos o duplicados (ej. "documentos repetidos del mes de septiembre del año 2026")
+// Detectar si es consulta general de evaluación de documentos repetidos o duplicados (modo 'contrato' o modo 'seguimiento')
 $esConsultaRepetidos = !$esConsultaRelacionados && (!empty($filters['es_consulta_repetidos']) || $esConsultaRepetidosPre);
 $filters['es_consulta_repetidos'] = $esConsultaRepetidos;
+
+// Determinar modo de repetición ('contrato' vs 'seguimiento') para no mezclar nunca los resultados de ambos tipos de consulta
+$modoRepeticion = ($modoRepeticionPre === 'seguimiento' || ($filters['modo_repeticion'] ?? '') === 'seguimiento')
+    ? 'seguimiento'
+    : 'contrato';
+$filters['modo_repeticion'] = $esConsultaRepetidos ? $modoRepeticion : null;
+
+// Detectar si es consulta para acceder, leer o resumir los archivos asociados a un documento específico (ej. "Podrías darme un resumento del documento ORD.IF : N°1348/2026")
+$esConsultaContenidoArchivo = !$esConsultaRelacionados && !$esConsultaRepetidos && (
+    !empty($filters['es_consulta_contenido_archivo']) ||
+    $esConsultaContenidoArchivoPre ||
+    (!empty($filters['doc_numero']) && !$esConsultaTiemposPre && !$generarExcelPre)
+);
+$filters['es_consulta_contenido_archivo'] = $esConsultaContenidoArchivo;
 
 // Si Paso 1 no extrajo responsable pero el usuario escribió el nombre de algún usuario/responsable del contrato en su consulta, lo detectamos en PHP
 if (empty($filters['responsable']) && !empty($usuariosContrato)) {
@@ -3028,11 +3665,11 @@ if (empty($filters['responsable']) && !empty($usuariosContrato)) {
 
 // Detectar si es consulta de métricas de tiempo / duración entre fechas de documentos
 $pideQueOCualesDocumentos = (bool)preg_match('/\b(qu[eé]\s+documentos?|cu[aá]les?\s+(?:son\s+los\s+)?documentos?|lista(?:r)?\s+(?:los\s+)?documentos?|mostrar\s+(?:los\s+)?documentos?|mu[eé]strame\s+(?:los\s+)?documentos?)\b/iu', $query);
-$esConsultaTiempos = (!$esConsultaRelacionados) && (!$esConsultaRepetidos) && (!$pideQueOCualesDocumentos) && (!empty($filters['es_consulta_tiempos']) || $esConsultaTiemposPre);
+$esConsultaTiempos = (!$esConsultaRelacionados) && (!$esConsultaRepetidos) && (!$esConsultaContenidoArchivo) && (!$pideQueOCualesDocumentos) && (!empty($filters['es_consulta_tiempos']) || $esConsultaTiemposPre);
 $filters['es_consulta_tiempos'] = $esConsultaTiempos;
 
 // Detectar si consulta por documentos que cambiaron de estado pendiente a cerrado (o se cerraron) en un período específico
-$filtrarPorFechaCierre = !$esConsultaRelacionados && !$esConsultaRepetidos && !$esConsultaTiempos && (!empty($filters['filtrar_por_fecha_cierre']) || $filtrarPorFechaCierrePre);
+$filtrarPorFechaCierre = !$esConsultaRelacionados && !$esConsultaRepetidos && !$esConsultaContenidoArchivo && !$esConsultaTiempos && (!empty($filters['filtrar_por_fecha_cierre']) || $filtrarPorFechaCierrePre);
 $filters['filtrar_por_fecha_cierre'] = $filtrarPorFechaCierre;
 
 // Detectar si el usuario pide ordenar por fecha de documento más antigua (más antiguos / más viejos / primeros)
@@ -3049,8 +3686,8 @@ if (preg_match('/\b(?:lista(?:r)?|muestra|mu[eé]strame|mostrar|dame|ver|buscar|
 }
 
 // Detectar si la consulta pregunta por cifras, cantidades, totales, conteos o clasificaciones estadísticas
-// (Si es una consulta sobre documentos relacionados o sobre documentos repetidos/duplicados, NO usar el contador general sin evaluar duplicidad)
-$esConsultaCantidad = !$esConsultaRelacionados && !$esConsultaRepetidos && !$esConsultaTiempos && (
+// (Si es una consulta sobre documentos relacionados, documentos repetidos/duplicados o resumen/contenido de un documento, NO usar el contador general)
+$esConsultaCantidad = !$esConsultaRelacionados && !$esConsultaRepetidos && !$esConsultaContenidoArchivo && !$esConsultaTiempos && (
     !empty($filters['es_consulta_cantidad']) ||
     (bool)preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|total(?:es)?|conteo|contar|estad[ií]sticas?|clasific\w*|desglos\w*|agrup\w*|n[uú]mero\s+total|n[uú]mero\s+de\s+documentos|registro\s+hist[oó]rico|por\s+mes(?:es)?|por\s+a[ñn]os?|por\s+tipos?)\b/iu', $query)
 );
@@ -3060,7 +3697,7 @@ $pideListarDocumentos = (
     (bool)preg_match('/\b(lista(?:r)?|muestra|mu[eé]strame|mostrar|dame\s+los|ver\s+los|cu[aá]les\s+son\s+los)\b/iu', $query) ||
     ($generarExcel && (bool)preg_match('/\b(documentos?|cartas?|oficios?|informes?|memor[aá]ndums?|resoluciones?|providencias?)\b/iu', $query))
 ) && !preg_match('/\b(cu[aá]nt[oa]s?|cantidad(?:es)?|cifras?|conteo|estad[ií]sticas?|clasific\w*|desglos\w*|por\s+mes(?:es)?|por\s+a[ñn]os?|por\s+responsables?|por\s+procesos?|por\s+tipos?|por\s+remitentes?|por\s+destinatarios?|por\s+materias?|promedio|tarda|demora)\b/iu', $query);
-if ($pideListarDocumentos || $esConsultaRelacionados || $esConsultaRepetidos) {
+if ($pideListarDocumentos || $esConsultaRelacionados || $esConsultaRepetidos || $esConsultaContenidoArchivo) {
     $esConsultaCantidad = false;
 }
 $filters['es_consulta_cantidad'] = $esConsultaCantidad;
@@ -3099,7 +3736,7 @@ if (empty($filters['clasificar_por'])) {
 $mencionaAmbosEstados = (bool)(preg_match('/\bpendientes?\b/iu', $query) && preg_match('/\bcerrad[oa]s?\b/iu', $query));
 if ($filtrarPorFechaCierre) {
     $filters['estado_doc'] = 2;
-} elseif ($mencionaAmbosEstados || $esConsultaTiempos || $esConsultaRelacionados) {
+} elseif ($mencionaAmbosEstados || $esConsultaTiempos || $esConsultaRelacionados || $esConsultaContenidoArchivo) {
     $filters['estado_doc'] = null;
 } elseif (empty($filters['estado_doc']) && ($filters['clasificar_por'] ?? null) !== 'estado') {
     if (preg_match('/\bpendientes?\b/iu', $query)) {
@@ -3124,7 +3761,7 @@ foreach ($mapaMesesNombre as $nombreM => $numM) {
 }
 if ($mesExplicitoDetectado !== null && empty($filters['mes'])) {
     $filters['mes'] = $mesExplicitoDetectado;
-} elseif ($mesExplicitoDetectado === null && (($filters['clasificar_por'] ?? null) === 'mes' || $ordenAntiguos || !empty($filters['orden_recientes']) || $esConsultaTiempos || $esConsultaRelacionados || $esConsultaRepetidos)) {
+} elseif ($mesExplicitoDetectado === null && (($filters['clasificar_por'] ?? null) === 'mes' || $ordenAntiguos || !empty($filters['orden_recientes']) || $esConsultaTiempos || $esConsultaRelacionados || $esConsultaRepetidos || $esConsultaContenidoArchivo)) {
     $filters['mes'] = null;
 }
 
@@ -3136,8 +3773,8 @@ if (preg_match('/(?<![\/\-])\b(19\d{2}|20\d{2})\b(?![\/\-])/u', $queryLower, $mA
     if (empty($filters['anio'])) {
         $filters['anio'] = $anioExplicitoDetectado;
     }
-} elseif (!empty($filters['doc_numero']) || !empty($filters['num_proceso']) || $esConsultaRelacionados || $esConsultaRepetidos || $ordenAntiguos || !empty($filters['orden_recientes']) || $esConsultaTiempos) {
-    // Si busca por código de documento (ej. 1140/2026), código de proceso, documentos relacionados, repetidos, más antiguos, más recientes o métricas de tiempo sin año independiente, no restringir por año
+} elseif (!empty($filters['doc_numero']) || !empty($filters['num_proceso']) || $esConsultaRelacionados || $esConsultaRepetidos || $esConsultaContenidoArchivo || $ordenAntiguos || !empty($filters['orden_recientes']) || $esConsultaTiempos) {
+    // Si busca por código de documento (ej. 1140/2026), código de proceso, documentos relacionados, repetidos, contenido, más antiguos, más recientes o métricas de tiempo sin año independiente, no restringir por año
     $filters['anio'] = null;
 }
 
@@ -3147,7 +3784,7 @@ if (empty($fechasExplicitasEnQuery) && (!empty($filters['anio']) || !empty($filt
     $filters['fecha_hasta'] = null;
 }
 
-// Si se detectaron filtros de variables de documentos, documentos relacionados, repetidos, consulta de tiempos o consulta de cantidades de documentos, asegurar intent document
+// Si se detectaron filtros de variables de documentos, documentos relacionados, repetidos, contenido, consulta de tiempos o consulta de cantidades de documentos, asegurar intent document
 if (!empty($customVars['id_responsable']) || !empty($customVars['id_remitente']) || !empty($customVars['id_destinatario']) ||
     !empty($filters['responsable']) || !empty($filters['remitente']) || !empty($filters['destinatario']) ||
     !empty($filters['doc_numero']) || !empty($filters['num_proceso']) || !empty($filters['num_providencia']) ||
@@ -3156,7 +3793,7 @@ if (!empty($customVars['id_responsable']) || !empty($customVars['id_remitente'])
     !empty($filters['orden_antiguos']) || !empty($filters['orden_recientes']) ||
     !empty($filters['clasificar_por']) || !empty($filters['anio']) || !empty($filters['mes']) ||
     !empty($filters['fecha_desde']) || !empty($filters['fecha_hasta']) ||
-    $esConsultaRelacionados || $esConsultaRepetidos || $esConsultaTiempos || $esConsultaCantidad) {
+    $esConsultaRelacionados || $esConsultaRepetidos || $esConsultaContenidoArchivo || $esConsultaTiempos || $esConsultaCantidad) {
     $intent = 'document';
 }
 
@@ -3164,9 +3801,12 @@ if (!empty($customVars['id_responsable']) || !empty($customVars['id_remitente'])
 $stopwords = [
     'usuario', 'usuarios', 'contrato', 'contratos', 'subcontrato', 'subcontratos',
     'documento', 'documentos', 'listar', 'lista', 'mostrar', 'muestra', 'muestrame', 'muéstrame',
-    'todos', 'todas', 'ver', 'dame', 'entregar', 'especifico', 'específicos', 'especifica', 'especificas',
+    'todos', 'todas', 'ver', 'dame', 'darme', 'podrias', 'podrías', 'entregar', 'especifico', 'específicos', 'especifica', 'especificas',
     'buscar', 'busca', 'consultar', 'consulta', 'con', 'del', 'los', 'las', 'unos', 'unas', 'para', 'por',
     'sobre', 'materia', 'materias', 'asunto', 'asuntos', 'proceso', 'procesos', 'codigo', 'código', 'codigos', 'códigos',
+    'resumen', 'resumento', 'resumir', 'resume', 'resúmeme', 'resumeme', 'sintesis', 'síntesis', 'contenido', 'trata', 'dice',
+    'archivo', 'archivos', 'adjunto', 'adjuntos', 'anexo', 'anexos', 'asociado', 'asociados', 'asociada', 'asociadas',
+    'explica', 'explicame', 'explícame', 'explicar', 'analiza', 'analizar', 'leer', 'lee', 'ord',
     'excel', 'planilla', 'planillas', 'xlsx', 'xls', 'exportar', 'exporta', 'exportame', 'expórtame', 'exportalo', 'expórtalo',
     'generar', 'genera', 'generame', 'genérame', 'descargar', 'descarga', 'descargame', 'descárgame', 'hoja', 'calculo', 'cálculo',
     'columna', 'columnas', 'campo', 'campos', 'informacion', 'información', 'anterior', 'eso', 'esos', 'esas', 'estos', 'estas',
@@ -3174,7 +3814,8 @@ $stopwords = [
     'antiguo', 'antiguos', 'antigua', 'antiguas', 'viejo', 'viejos', 'vieja', 'viejas', 'primer', 'primero', 'primeros', 'primera', 'primeras',
     'mas', 'más', 'estan', 'están', 'esta', 'está', 'que', 'cual', 'cuál',
     'relacionado', 'relacionados', 'relacionada', 'relacionadas', 'duplicado', 'duplicados', 'duplicada', 'duplicadas',
-    'repetido', 'repetidos', 'repetida', 'repetidas', 'repeticion', 'repetición', 'repiten', 'repite',
+    'repetido', 'repetidos', 'repetida', 'repetidas', 'respetido', 'respetidos', 'respetida', 'respetidas', 'repedito', 'repeditos',
+    'repeticion', 'repetición', 'repiten', 'repite', 'decirme', 'decir',
     'seguimiento', 'seguimientos', 'indicame', 'indícame', 'indicar', 'indica', 'carta', 'oficio', 'informe', 'providencia', 'memorandum', 'memorándum', 'resolucion', 'resolución',
     'tarda', 'tardan', 'demora', 'demoran', 'tiempo', 'tiempos', 'promedio', 'promedios', 'dia', 'dias', 'día', 'días',
     'pasar', 'pasa', 'pasan', 'cierre', 'cerrar', 'cerrarse', 'espera', 'plazo', 'plazos', 'entre', 'diferencia', 'metricas', 'métricas',
@@ -3201,10 +3842,10 @@ if (is_array($keywords)) {
 }
 $keywords = $filteredKeywords;
 
-// Si el usuario consulta por "más antiguos" / "último documento" / "recientes" / documentos relacionados / repetidos / métricas de tiempo o cifras históricas
+// Si el usuario consulta por "más antiguos" / "último documento" / "recientes" / documentos relacionados / repetidos / contenido / métricas de tiempo o cifras históricas
 // sin haber escrito un año, mes o fecha explícita, limpiamos fecha_desde / fecha_hasta para abarcar todo el registro histórico.
 $mentionsExplicitYearOrMonthOrDate = ($mesExplicitoDetectado !== null) || ($anioExplicitoDetectado !== null) || !empty($fechasExplicitasEnQuery);
-if (!$mentionsExplicitYearOrMonthOrDate && ($esConsultaRelacionados || $esConsultaRepetidos || $ordenAntiguos || $esConsultaTiempos || preg_match('/(últim|ultim|recient|nuev|antigu|viej|primer)/iu', $queryLower) || $esConsultaCantidad)) {
+if (!$mentionsExplicitYearOrMonthOrDate && ($esConsultaRelacionados || $esConsultaRepetidos || $esConsultaContenidoArchivo || $ordenAntiguos || $esConsultaTiempos || preg_match('/(últim|ultim|recient|nuev|antigu|viej|primer)/iu', $queryLower) || $esConsultaCantidad)) {
     $filters['fecha_desde'] = null;
     $filters['fecha_hasta'] = null;
 }
@@ -3216,7 +3857,7 @@ $tieneCriterioPropio = !empty($filters['responsable']) || !empty($filters['remit
     !empty($filters['tipo_documento']) || !empty($filters['materia']) || !empty($filters['estado_doc']) ||
     !empty($filters['flujo_doc']) || !empty($filters['clasificar_por']) || !empty($filters['anio']) ||
     !empty($filters['mes']) || !empty($filters['fecha_desde']) || !empty($filters['fecha_hasta']) ||
-    !empty($keywords) || $esConsultaRelacionados || $esConsultaRepetidos || $esConsultaTiempos || $esConsultaCantidad ||
+    !empty($keywords) || $esConsultaRelacionados || $esConsultaRepetidos || $esConsultaContenidoArchivo || $esConsultaTiempos || $esConsultaCantidad ||
     $intent === 'user' || $intent === 'contract';
 
 $ctxTempFile = rtrim(sys_get_temp_dir(), '/\\') . '/sgd_chat_ctx_' . (int)$userId . '_' . (int)$userContractId . '.json';
@@ -3239,6 +3880,8 @@ if ($generarExcel && !$tieneCriterioPropio && !empty($lastCtxSaved)) {
     }
     $esConsultaRelacionados = !empty($filters['es_consulta_relacionados']);
     $esConsultaRepetidos = !empty($filters['es_consulta_repetidos']);
+    $modoRepeticion = ($filters['modo_repeticion'] ?? 'contrato') === 'seguimiento' ? 'seguimiento' : 'contrato';
+    $esConsultaContenidoArchivo = !empty($filters['es_consulta_contenido_archivo']);
     $esConsultaTiempos = !empty($filters['es_consulta_tiempos']);
     $esConsultaCantidad = !empty($filters['es_consulta_cantidad']);
     $ordenAntiguos = !empty($filters['orden_antiguos']);
@@ -3285,7 +3928,7 @@ if ($intent === 'contract' || $intent === 'general') {
     }
 }
 
-if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad && !$esConsultaTiempos && !$esConsultaRelacionados && !$esConsultaRepetidos) {
+if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad && !$esConsultaTiempos && !$esConsultaRelacionados && !$esConsultaRepetidos && !$esConsultaContenidoArchivo) {
     $usuariosFormateados = [];
     foreach ($usuariosContrato as $uc) {
         $nombreCompletoU = trim(preg_replace('/\s+/u', ' ', ($uc['nombre'] ?? '') . ' ' . ($uc['apellido_p'] ?? '') . ' ' . ($uc['apellido_m'] ?? '')));
@@ -3319,6 +3962,8 @@ if (($intent === 'user' || $intent === 'general') && !$esConsultaCantidad && !$e
     $dbResults['usuarios'] = $usuariosFormateados;
 }
 
+$inlinePartsDocumento = [];
+
 if ($intent === 'document' || $intent === 'general') {
     if ($esConsultaRelacionados) {
         // Cuando pregunta por documentos relacionados, cuántos documentos relacionados tiene o si tiene documentos relacionados duplicados de un documento específico
@@ -3329,12 +3974,22 @@ if ($intent === 'document' || $intent === 'general') {
             $dbResults['error_consulta_documentos'] = $resRel['error'];
         }
     } elseif ($esConsultaRepetidos) {
-        // Cuando pide evaluar, listar, contar o exportar los documentos repetidos / duplicados (ej. "documentos repetidos del mes de septiembre del año 2026")
-        $resRep = consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato);
+        // Cuando pide evaluar, listar, contar o exportar los documentos repetidos / duplicados:
+        // - $modoRepeticion = 'contrato': evalúa exclusivamente los documentos asociados al contrato (sin mezclar seguimiento)
+        // - $modoRepeticion = 'seguimiento': evalúa exclusivamente si hay documentos de seguimiento repetidos en los documentos del contrato
+        $resRep = consultarDocumentosRepetidos($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato, $modoRepeticion);
         if (!isset($resRep['error'])) {
             $dbResults['analisis_documentos_repetidos'] = $resRep;
         } else {
             $dbResults['error_consulta_documentos'] = $resRep['error'];
+        }
+    } elseif ($esConsultaContenidoArchivo) {
+        // Cuando pide resumen, lectura, síntesis o información de los archivos asociados a un documento específico (ej. "Podrías darme un resumento del documento ORD.IF : N°1348/2026")
+        $resCont = consultarArchivosYContenidoDocumento($cnx, $userContractId, $userId, $filters, $keywords, $customVars, $usuariosContrato, $inlinePartsDocumento);
+        if (!isset($resCont['error'])) {
+            $dbResults['analisis_contenido_documento'] = $resCont;
+        } else {
+            $dbResults['error_consulta_documentos'] = $resCont['error'];
         }
     } elseif ($esConsultaTiempos) {
         // Cuando pregunta por tiempos entre fechas (ej. cuánto tarda en pasar de pendiente a cerrado, tiempo promedio general o por responsable/usuario/tipo/mes/año)
@@ -3439,10 +4094,21 @@ if ($esConsultaRelacionados) {
    - Si el usuario pregunta **si tiene documentos relacionados duplicados**: responde claramente **Sí** o **No** según `tiene_documentos_relacionados_duplicados`. Si `tiene_documentos_relacionados_duplicados` es `true`, detalla cada elemento de `duplicados_detectados` indicando su `tipo_documento`, `num_documento`, `materia`, cuántas veces está repetido (`veces_repetido`) y el motivo (`tipo_duplicado`).
    - Siempre que menciones un documento (ya sea el consultado o sus documentos relacionados), incluye su enlace de descarga directa en formato Markdown: `[Descargar Documento](negocio/descargarDocumento.php?idDocumento=ID)` donde ID es su `id_documento`.";
 } elseif ($esConsultaRepetidos) {
-    $instruccionesEspecificas = "3. EVALUACIÓN DE DOCUMENTOS REPETIDOS / DUPLICADOS: El usuario solicitó identificar o exportar únicamente los documentos repetidos/duplicados dentro del período o criterio consultado. Responde utilizando EXCLUSIVAMENTE los datos de `analisis_documentos_repetidos`:
-   - Indica cuántos documentos en total fueron evaluados en ese período (`total_documentos_evaluados_en_periodo`) y cuántos de ellos resultaron estar repetidos o con duplicidad (`total_documentos_repetidos_encontrados`).
-   - Si `total_documentos_repetidos_encontrados` es `0`, indícale claramente que tras evaluar los `total_documentos_evaluados_en_periodo` documentos del período, ninguno presenta duplicidad.
-   - Si existen documentos en `documentos_repetidos`, lista cada uno indicando su `tipo_documento`, `num_documento`, `materia`, `fecha_documento`, `responsable`, cuántas veces está repetido (`veces_repetido`) y su `motivo_repeticion` exacto, incluyendo el enlace `[Descargar Documento](negocio/descargarDocumento.php?idDocumento=ID)`.";
+    $instruccionesEspecificas = "3. EVALUACIÓN DIFERENCIADA DE DOCUMENTOS REPETIDOS (`modo_evaluacion`: `'contrato'` vs `'seguimiento'`): El usuario solicitó evaluar documentos repetidos. Responde utilizando EXCLUSIVAMENTE los datos de `analisis_documentos_repetidos` y NUNCA mezcles ambos tipos de evaluación:
+   - Revisa primero el campo `modo_evaluacion` dentro de `analisis_documentos_repetidos`:
+     - **Caso A (`modo_evaluacion` = `'contrato'`)**: El usuario preguntó por **los documentos repetidos asociados al contrato** (ej. 'Podrías decirme los documentos repetidos del contrato'). Deja claro en el título y explicación que estás informando únicamente los **documentos principales asociados al contrato** que comparten el mismo Número de Documento (`num_documento`) o Número de Providencia (`num_providencia`), sin mezclar registros de seguimiento.
+     - **Caso B (`modo_evaluacion` = `'seguimiento'`)**: El usuario preguntó **si hay documentos de seguimiento repetidos en los documentos de su contrato** (ej. 'Podrías decirme si hay documentos de seguimiento repetidos en los documentos de mi contrato'). Deja claro en el título y explicación que estás informando únicamente los **documentos del contrato que presentan documentos de seguimiento / relacionados repetidos** dentro de su historial de seguimiento (`numero_seguimiento`), indicando en cada caso qué documento de seguimiento se repite (`detalle_seguimiento_repetido`), sin mezclar duplicados generales de documentos del contrato.
+   - Indica cuántos documentos del contrato fueron evaluados (`total_documentos_evaluados_en_periodo`) y cuántos resultaron con repetición según el modo consultado (`total_documentos_repetidos_encontrados`).
+   - Si `total_documentos_repetidos_encontrados` es `0`, responde claramente que no se encontraron repeticiones bajo ese criterio específico.
+   - Si existen documentos en `documentos_repetidos`, lista cada uno indicando su `tipo_documento`, `num_documento`, `materia`, `fecha_documento`, `responsable`, `veces_repetido`, su `motivo_repeticion` (y `detalle_seguimiento_repetido` cuando `modo_evaluacion` es `'seguimiento'`), incluyendo el enlace `[Descargar Documento](negocio/descargarDocumento.php?idDocumento=ID)`.";
+} elseif ($esConsultaContenidoArchivo) {
+    $instruccionesEspecificas = "3. ANÁLISIS, LECTURA Y RESUMEN DE DOCUMENTO Y SUS ARCHIVOS ASOCIADOS: El usuario solicita un resumen, explicación o información sobre un documento específico (ej. `ORD.IF : N°1348/2026`) y sus archivos asociados. Responde utilizando los datos de `analisis_contenido_documento` Y el contenido de los archivos binarios adjuntos en la petición (`inline_data` PDF/imágenes) o `texto_extraido_local`:
+   - Si `documento_encontrado` es `false`, indícale claramente que no se encontró ningún documento con ese código dentro de su contrato.
+   - Presenta una **Ficha de Identificación del Documento** con sus datos clave (`tipo_documento`, `num_documento`, `num_providencia`, `num_proceso`, `materia`, `fecha_documento`, `fecha_recepcion`, `estado_documento`, `flujo_documento`, `remitente`, `destinatario`, `responsable`).
+   - Presenta un **Resumen Ejecutivo Completo del Contenido del Archivo**: lee íntegramente el archivo principal adjunto en binario (`inline_data`) y/o su `texto_extraido_local` (junto con `materia`, `antecedente`, `incluye`, `comentario` y `bitacora_respuestas`) y explica con claridad:
+     1. **Objetivo / Asunto principal del documento**.
+     2. **Puntos clave, solicitudes, hallazgos, montos, plazos o conclusiones** contenidos dentro del archivo.
+     3. **Archivos asociados y adjuntos**: indica el nombre y tamaño del archivo principal (`archivo_principal.nombre_archivo`) con su enlace `[Descargar Archivo Principal](negocio/descargarDocumento.php?idDocumento=ID)`, y si existen archivos en `archivos_adjuntos`, detállalos junto con su resumen y su enlace `[Descargar Adjunto](negocio/descargarDocumento.php?idAdjunto=ID_ADJUNTO)`.";
 } elseif ($esConsultaTiempos) {
     $instruccionesEspecificas = "3. CONSULTA DE TIEMPOS Y MÉTRICAS ENTRE FECHAS DE DOCUMENTOS: El usuario está consultando por tiempos de gestión, demora promedio en pasar de Pendiente a Cerrado, diferencia entre fechas de documentos o cumplimiento de plazos. Responde utilizando EXCLUSIVAMENTE los datos calculados en `metricas_tiempos_fechas_documentos`:
    - Entrega primero las **métricas generales del contrato** (`resumen_general_tiempos`):
@@ -3502,7 +4168,8 @@ Instrucciones obligatorias para elaborar tu respuesta:
 {$instruccionesEspecificas}
 7. NO utilices jerga técnica de base de datos ni menciones consultas SQL o estructuras JSON.";
 
-$stage2Res = llamarGemini($apiKey, $stage2Prompt, false, 30);
+$timeoutPaso2 = !empty($inlinePartsDocumento) ? 55 : 30;
+$stage2Res = llamarGemini($apiKey, $stage2Prompt, false, $timeoutPaso2, $inlinePartsDocumento);
 
 // Sumar tokens del Paso 1 + Paso 2
 $tokensEntrada = (int)($stage1Res['usage']['prompt_tokens'] ?? 0) + (int)($stage2Res['usage']['prompt_tokens'] ?? 0);
@@ -3525,7 +4192,7 @@ mysqli_close($cnx);
 
 $finalAnswer = isset($stage2Res['text'])
     ? $stage2Res['text']
-    : generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters, $esConsultaRelacionados, $esConsultaRepetidos);
+    : generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters, $esConsultaRelacionados, $esConsultaRepetidos, $esConsultaContenidoArchivo);
 
 if ($excelExportInfo !== null) {
     $colsTexto = implode(', ', $excelExportInfo['columns']);

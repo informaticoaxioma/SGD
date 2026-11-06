@@ -409,6 +409,13 @@ function formatInlineMarkdown(str) {
                '<a href="buscador/detalleDocumentoBuscador.php?idDocumento=' + id + '" target="_blank" class="btn btn-primary btn-sm"><i class="fa fa-plus-circle"></i>&nbsp;Detalle</a>' +
                '</span>';
     });
+
+    var adjLinkRegex = /\[(.*?)\]\((negocio\/descargarDocumento\.php\?idAdjunto=(\d+))\)/gi;
+    str = str.replace(adjLinkRegex, function(match, label, url) {
+        return '<span class="sgd-doc-actions">' +
+               '<a href="../' + url + '" target="_blank" class="btn btn-info btn-sm"><i class="fa fa-paperclip"></i>&nbsp;' + (label || 'Descargar Adjunto') + '</a>' +
+               '</span>';
+    });
     return str;
 }
 
