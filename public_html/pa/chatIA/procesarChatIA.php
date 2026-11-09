@@ -3179,8 +3179,15 @@ function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsul
             }
             if (!empty($item['documentos_relacionados_seguimiento'])) {
                 $md .= "\n##### 5. Documentos Relacionados en Seguimiento (" . count($item['documentos_relacionados_seguimiento']) . ")\n";
-                foreach ($item['documentos_relacionados_seguimiento'] as $relS) {
-                    $md .= "- **{$relS['tipo_documento']} N° {$relS['num_documento']}** ({$relS['fecha_documento']}, {$relS['estado_documento']}): {$relS['materia']} — [Descargar Documento](negocio/descargarDocumento.php?idDocumento={$relS['id_documento']})\n";
+                foreach ($item['documentos_relacionados_seguimiento'] as $idxSeg => $relS) {
+                    if ($idxSeg < 7) {
+                        $md .= "- **{$relS['tipo_documento']} N° {$relS['num_documento']}** ({$relS['fecha_documento']}, {$relS['estado_documento']}): {$relS['materia']} — [Descargar Documento](negocio/descargarDocumento.php?idDocumento={$relS['id_documento']})\n";
+                    } else {
+                        if ($idxSeg === 7) {
+                            $md .= "\n**Resto de documentos relacionados (listado en texto):**\n";
+                        }
+                        $md .= "- {$relS['tipo_documento']} N° {$relS['num_documento']} ({$relS['fecha_documento']}, {$relS['estado_documento']}) — Materia: {$relS['materia']}\n";
+                    }
                 }
             }
             $md .= "\n";
@@ -3210,7 +3217,8 @@ function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsul
             return $md;
         }
 
-        foreach (array_slice($rep['documentos_repetidos'], 0, 25) as $idx => $d) {
+        $listaRep = $rep['documentos_repetidos'];
+        foreach (array_slice($listaRep, 0, 7) as $idx => $d) {
             $n = $idx + 1;
             $md .= "{$n}. **{$d['tipo_documento']} N° {$d['num_documento']}** (ID: {$d['id_documento']} | Providencia: {$d['num_providencia']})\n";
             if ($modoEv === 'seguimiento' && !empty($d['documentos_relacionados_duplicados'])) {
@@ -3220,6 +3228,18 @@ function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsul
             $md .= "   - **Materia:** {$d['materia']}\n";
             $md .= "   - **Fecha Documento:** {$d['fecha_documento']} | **Estado:** {$d['estado_documento']} | **Responsable:** {$d['responsable']}\n";
             $md .= "   - [Descargar Documento](negocio/descargarDocumento.php?idDocumento={$d['id_documento']})\n\n";
+        }
+
+        if (count($listaRep) > 7) {
+            $md .= "#### Resto de los documentos repetidos encontrados (listado en texto)\n\n";
+            foreach (array_slice($listaRep, 7) as $idxRest => $d) {
+                $n = $idxRest + 8;
+                $extraSeg = ($modoEv === 'seguimiento' && !empty($d['documentos_relacionados_duplicados']))
+                    ? " | Seguimiento repetido: {$d['documentos_relacionados_duplicados']}"
+                    : "";
+                $md .= "{$n}. **{$d['tipo_documento']} N° {$d['num_documento']}** (Providencia: {$d['num_providencia']}) — Materia: {$d['materia']} | Fecha: {$d['fecha_documento']} | Estado: {$d['estado_documento']} | Responsable: {$d['responsable']} | {$d['motivo_repeticion']}{$extraSeg}\n";
+            }
+            $md .= "\n";
         }
         return $md;
     }
@@ -3253,11 +3273,20 @@ function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsul
             }
 
             if (!empty($item['documentos_relacionados'])) {
+                $listaRel = $item['documentos_relacionados'];
                 $md .= "\n**Listado de documentos relacionados:**\n";
-                foreach ($item['documentos_relacionados'] as $idx => $dr) {
+                foreach (array_slice($listaRel, 0, 7) as $idx => $dr) {
                     $n = $idx + 1;
                     $badgeDup = !empty($dr['es_duplicado']) ? " *(Duplicado: aparece {$dr['veces_en_seguimiento']} veces)*" : "";
                     $md .= "{$n}. **{$dr['tipo_documento']} N° {$dr['num_documento']}**{$badgeDup} — Materia: {$dr['materia']} | Fecha: {$dr['fecha_documento']} | Estado: {$dr['estado_documento']} | [Descargar Documento](negocio/descargarDocumento.php?idDocumento={$dr['id_documento']})\n";
+                }
+                if (count($listaRel) > 7) {
+                    $md .= "\n**Resto de los documentos relacionados (listado en texto):**\n";
+                    foreach (array_slice($listaRel, 7) as $idxRest => $dr) {
+                        $n = $idxRest + 8;
+                        $badgeDup = !empty($dr['es_duplicado']) ? " *(Duplicado: aparece {$dr['veces_en_seguimiento']} veces)*" : "";
+                        $md .= "{$n}. **{$dr['tipo_documento']} N° {$dr['num_documento']}**{$badgeDup} — Materia: {$dr['materia']} | Fecha: {$dr['fecha_documento']} | Estado: {$dr['estado_documento']}\n";
+                    }
                 }
             }
             $md .= "\n";
@@ -3345,8 +3374,9 @@ function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsul
     }
 
     if (!empty($dbResults['documentos'])) {
+        $listaDocs = $dbResults['documentos'];
         $md = "### Documentos encontrados en el contrato **{$userContractName}**\n\n";
-        foreach ($dbResults['documentos'] as $idx => $d) {
+        foreach (array_slice($listaDocs, 0, 7) as $idx => $d) {
             $num = $idx + 1;
             $md .= "{$num}. **{$d['tipo_documento']} N° {$d['num_documento']}** (Providencia: {$d['num_providencia']})\n";
             $md .= "   - **Materia:** {$d['materia']}\n";
@@ -3354,10 +3384,90 @@ function generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsul
             $md .= "   - **Estado:** {$d['estado_documento']} | **Responsable:** {$d['responsable']}\n";
             $md .= "   - [Descargar Documento](negocio/descargarDocumento.php?idDocumento={$d['id_documento']})\n\n";
         }
+        if (count($listaDocs) > 7) {
+            $md .= "#### Resto de los documentos encontrados (listado en texto)\n\n";
+            foreach (array_slice($listaDocs, 7) as $idxRest => $d) {
+                $num = $idxRest + 8;
+                $md .= "{$num}. **{$d['tipo_documento']} N° {$d['num_documento']}** (Providencia: {$d['num_providencia']}) — Materia: {$d['materia']} | Fecha: {$d['fecha_documento']} | Estado: {$d['estado_documento']} | Responsable: {$d['responsable']}\n";
+            }
+            $md .= "\n";
+        }
         return $md;
     }
 
     return "No se encontraron registros que coincidan con los criterios consultados en el contrato **{$userContractName}**.";
+}
+
+/**
+ * Garantiza que en cualquier listado de documentos entregado en la respuesta:
+ * 1. Solo los primeros 7 documentos tengan los botones de Descargar y Detalle (`[Descargar Documento](negocio/descargarDocumento.php?idDocumento=...)`).
+ * 2. Si la consulta arrojó más de 7 documentos, del 8° documento en adelante se listen únicamente como texto simple sin botones.
+ */
+function aplicarReglaMaximoSieteDocumentosConDetalle($textoRespuesta, $dbResults, $esConsultaRelacionados = false, $esConsultaRepetidos = false, $esConsultaContenidoArchivo = false, $esConsultaTiempos = false, $esConsultaCantidad = false) {
+    if ($esConsultaTiempos || $esConsultaCantidad) {
+        return $textoRespuesta;
+    }
+
+    // 1. Limitar enlaces `[...](negocio/descargarDocumento.php?idDocumento=...)` a un máximo de 7 ocurrencias
+    $contadorLinks = 0;
+    $textoRespuesta = preg_replace_callback(
+        '/(?:\s*[—\-|•]*\s*)?\[([^\]]*)\]\((negocio\/descargarDocumento\.php\?idDocumento=\d+)\)/i',
+        function ($m) use (&$contadorLinks) {
+            $contadorLinks++;
+            if ($contadorLinks <= 7) {
+                return $m[0];
+            }
+            return '';
+        },
+        (string)$textoRespuesta
+    );
+
+    // 2. Determinar si hay documentos adicionales (del 8° en adelante) que deban listarse como texto si no fueron incluidos por el modelo
+    $listaCompleta = [];
+    $modoRep = 'contrato';
+    if ($esConsultaRepetidos && !empty($dbResults['analisis_documentos_repetidos']['documentos_repetidos'])) {
+        $listaCompleta = $dbResults['analisis_documentos_repetidos']['documentos_repetidos'];
+        $modoRep = $dbResults['analisis_documentos_repetidos']['modo_evaluacion'] ?? 'contrato';
+    } elseif (!$esConsultaRelacionados && !$esConsultaContenidoArchivo && !empty($dbResults['documentos']) && is_array($dbResults['documentos'])) {
+        $listaCompleta = $dbResults['documentos'];
+    }
+
+    if (count($listaCompleta) > 7) {
+        $restantes = array_slice($listaCompleta, 7, 43); // Mostrar hasta 50 en total en el chat
+        $lineasFaltantes = [];
+        foreach ($restantes as $idxR => $docR) {
+            $numOrden = $idxR + 8;
+            $numDocStr = trim((string)($docR['num_documento'] ?? ''));
+            // Verificar si este documento ya fue listado en el texto por Gemini
+            if ($numDocStr !== '' && mb_stripos($textoRespuesta, $numDocStr, 0, 'UTF-8') !== false) {
+                continue;
+            }
+            $tipo = $docR['tipo_documento'] ?? 'Documento';
+            $prov = !empty($docR['num_providencia']) ? " (Providencia: {$docR['num_providencia']})" : "";
+            $mat  = $docR['materia'] ?? 'Sin materia';
+            $fec  = $docR['fecha_documento'] ?? ($docR['fecha_recepcion'] ?? 'S/F');
+            $est  = $docR['estado_documento'] ?? '';
+            $resp = $docR['responsable'] ?? 'Sin asignar';
+
+            if ($esConsultaRepetidos) {
+                $motivo = !empty($docR['motivo_repeticion']) ? " | {$docR['motivo_repeticion']}" : "";
+                $segDup = ($modoRep === 'seguimiento' && !empty($docR['documentos_relacionados_duplicados']))
+                    ? " | Seguimiento repetido: {$docR['documentos_relacionados_duplicados']}"
+                    : "";
+                $lineasFaltantes[] = "{$numOrden}. **{$tipo} N° {$numDocStr}**{$prov} — Materia: {$mat} | Fecha: {$fec} | Estado: {$est} | Responsable: {$resp}{$motivo}{$segDup}";
+            } else {
+                $lineasFaltantes[] = "{$numOrden}. **{$tipo} N° {$numDocStr}**{$prov} — Materia: {$mat} | Fecha: {$fec} | Estado: {$est} | Responsable: {$resp}";
+            }
+        }
+
+        if (!empty($lineasFaltantes)) {
+            $textoRespuesta = rtrim($textoRespuesta)
+                . "\n\n#### Resto de los documentos encontrados (listado en texto)\n\n"
+                . implode("\n", $lineasFaltantes);
+        }
+    }
+
+    return $textoRespuesta;
 }
 
 /**
@@ -4534,15 +4644,20 @@ if ($generarExcel) {
     }
 }
 
-// Para que el Paso 3 (Gemini) sea rápido incluso cuando se exportan cientos de documentos a Excel,
-// limitamos la muestra enviada al prompt a 20 documentos e informamos el total exportado.
+// Regla de visualización de listas de documentos:
+// Si la consulta entrega más de 7 documentos, solo los primeros 7 se detallan con botones de Descargar y Detalle;
+// el resto de los documentos (del 8° en adelante) se listan únicamente como texto simple al final de la respuesta.
 $dbResultsForPrompt = $dbResults;
-if (isset($dbResultsForPrompt['documentos']) && is_array($dbResultsForPrompt['documentos']) && count($dbResultsForPrompt['documentos']) > 20) {
+if (isset($dbResultsForPrompt['documentos']) && is_array($dbResultsForPrompt['documentos'])) {
     $dbResultsForPrompt['total_documentos_encontrados'] = count($dbResultsForPrompt['documentos']);
-    $dbResultsForPrompt['documentos'] = array_slice($dbResultsForPrompt['documentos'], 0, 20);
+    if (count($dbResultsForPrompt['documentos']) > 7) {
+        $dbResultsForPrompt['nota_visualizacion_lista'] = 'Se entregan los primeros 7 documentos para mostrar con detalle y botón de descarga; los restantes (' . (count($dbResultsForPrompt['documentos']) - 7) . ' documentos) serán anexados automáticamente como listado de texto.';
+        $dbResultsForPrompt['documentos'] = array_slice($dbResultsForPrompt['documentos'], 0, 7);
+    }
 }
-if (isset($dbResultsForPrompt['analisis_documentos_repetidos']['documentos_repetidos']) && count($dbResultsForPrompt['analisis_documentos_repetidos']['documentos_repetidos']) > 20) {
-    $dbResultsForPrompt['analisis_documentos_repetidos']['documentos_repetidos'] = array_slice($dbResultsForPrompt['analisis_documentos_repetidos']['documentos_repetidos'], 0, 20);
+if (isset($dbResultsForPrompt['analisis_documentos_repetidos']['documentos_repetidos']) && is_array($dbResultsForPrompt['analisis_documentos_repetidos']['documentos_repetidos']) && count($dbResultsForPrompt['analisis_documentos_repetidos']['documentos_repetidos']) > 7) {
+    $dbResultsForPrompt['analisis_documentos_repetidos']['nota_visualizacion_lista'] = 'Se entregan los primeros 7 documentos repetidos para mostrar con detalle y botón de descarga; los restantes serán anexados automáticamente como listado de texto.';
+    $dbResultsForPrompt['analisis_documentos_repetidos']['documentos_repetidos'] = array_slice($dbResultsForPrompt['analisis_documentos_repetidos']['documentos_repetidos'], 0, 7);
 }
 if ($excelExportInfo !== null) {
     $dbResultsForPrompt['planilla_excel_generada'] = [
@@ -4617,7 +4732,7 @@ if ($esConsultaRelacionados) {
    - **Responsable** (`responsable`)
    - **Remitente** (`remitente` y `cargo_remitente` si aplica)
    - **Destinatario** (`destinatario` y `cargo_destinatario` si aplica)
-5. ENLACES DE DESCARGA: Siempre que menciones un documento específico, incluye su enlace de descarga directa en formato Markdown exactamente así: `[Descargar Documento](negocio/descargarDocumento.php?idDocumento=ID)` donde ID es el `id_documento` correspondiente.
+5. ENLACES DE DESCARGA Y LÍMITE DE 7 DOCUMENTOS CON DETALLE: Cuando la consulta entregue una lista de documentos, muestra con ficha detallada y enlace `[Descargar Documento](negocio/descargarDocumento.php?idDocumento=ID)` únicamente hasta los primeros 7 documentos. Si hay más de 7 documentos (`total_documentos_encontrados > 7`), menciona el total encontrado y detalla esos primeros 7 documentos (el resto de los documentos del 8° en adelante se listarán debajo únicamente como texto simple sin botones).
 6. Si la lista `documentos` está vacía para ese filtro, indícale amablemente que no se encontraron documentos con ese criterio dentro de su contrato y menciónale los responsables disponibles en `responsables_del_contrato` si buscaba por responsable.";
 }
 
@@ -4677,6 +4792,18 @@ try {
 $finalAnswer = isset($stage2Res['text'])
     ? $stage2Res['text']
     : generarRespuestaFallbackLocal($dbResults, $esConsultaTiempos, $esConsultaCantidad, $userContractName, $filters, $esConsultaRelacionados, $esConsultaRepetidos, $esConsultaContenidoArchivo);
+
+// Garantizar que si cualquier consulta entrega más de 7 documentos, solo los primeros 7 tengan botones de Descargar y Detalle,
+// y el resto de los documentos (del 8° en adelante) se listen simplemente como texto
+$finalAnswer = aplicarReglaMaximoSieteDocumentosConDetalle(
+    $finalAnswer,
+    $dbResults,
+    $esConsultaRelacionados,
+    $esConsultaRepetidos,
+    $esConsultaContenidoArchivo,
+    $esConsultaTiempos,
+    $esConsultaCantidad
+);
 
 if ($excelExportInfo !== null) {
     $colsTexto = implode(', ', $excelExportInfo['columns']);

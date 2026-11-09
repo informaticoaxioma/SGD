@@ -404,10 +404,17 @@ function formatInlineMarkdown(str) {
                '<a href="' + url + '" target="_blank" class="btn btn-success btn-sm"><i class="fa fa-file-excel-o"></i>&nbsp;' + label + '</a>' +
                '</span>';
     });
-    // Botones de Descarga y Detalle con el estilo estándar del SGD
-    var linkRegex = /\[(.*?)\]\((negocio\/descargarDocumento\.php\?idDocumento=(\d+))\)/gi;
+    // Botones de Descarga y Detalle con el estilo estándar del SGD (máximo 7 documentos con botones por respuesta)
+    var linkRegex = /(?:\s*[—\-|•]*\s*)?\[(.*?)\]\((negocio\/descargarDocumento\.php\?idDocumento=(\d+))\)/gi;
     str = str.replace(linkRegex, function(match, label, url, id) {
-        return '<span class="sgd-doc-actions">' +
+        if (typeof window._sgdDocButtonsCount !== 'number') {
+            window._sgdDocButtonsCount = 0;
+        }
+        window._sgdDocButtonsCount++;
+        if (window._sgdDocButtonsCount > 7) {
+            return '';
+        }
+        return ' <span class="sgd-doc-actions">' +
                '<a href="../' + url + '" target="_blank" class="btn btn-success btn-sm"><i class="fa fa-download"></i>&nbsp;Descargar</a>' +
                '<a href="buscador/detalleDocumentoBuscador.php?idDocumento=' + id + '" target="_blank" class="btn btn-primary btn-sm"><i class="fa fa-plus-circle"></i>&nbsp;Detalle</a>' +
                '</span>';
@@ -424,6 +431,7 @@ function formatInlineMarkdown(str) {
 
 function formatMarkdown(text) {
     if (!text) return "";
+    window._sgdDocButtonsCount = 0;
 
     var escaped = text
         .replace(/&/g, "&amp;")

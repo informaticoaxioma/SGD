@@ -344,6 +344,13 @@ if ($_POST) {
             }
         }
 
+        // 3. Si el documento ingresado ya cumplió o venció su Fecha de Plazo, enviar alerta de atraso diferenciada a Responsable y Corresponsables
+        try {
+            $serviceMail->notificarAtrasoDocumentoPorId($idDocumento);
+        } catch (Throwable $tAtraso) {
+            error_log("Error verificando notificación de atraso al ingresar documento ID {$idDocumento}: " . $tAtraso->getMessage());
+        }
+
         if ($exitoOperacion == 1) {
             $mensaje = "Documento asignado y correo enviado con éxito.";
         } elseif ($exitoOperacion == 0) {

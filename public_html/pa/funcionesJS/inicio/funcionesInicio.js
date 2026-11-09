@@ -1,5 +1,11 @@
 $(document).ready(function () {
 
+    // Verificar en segundo plano (1 vez al día por contrato) los documentos que ya cumplieron su fecha de plazo (en atraso)
+    // para enviar el correo diferenciado al Responsable y a los Corresponsables sin bloquear la carga de la interfaz
+    setTimeout(function () {
+        $.post("../negocio/notificarDocumentosAtrasados.php", {}, function () {});
+    }, 2500);
+
     $('a[href^="#"]').on('click', function (e) {
         e.preventDefault();
 

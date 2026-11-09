@@ -18,6 +18,7 @@ require_once '../../data/Cargo.php';
 require_once '../../data/Entidad.php';
 require_once '../../data/Seguimiento.php';
 require_once '../../data/Funciones.php';
+require_once '../../data/Mail.php';
 require_once '/var/www/sgd.axioma.cl/public_html/pa/gg/Controllers/UsuariosController.php';
 require_once '/var/www/sgd.axioma.cl/public_html/pa/gg/Controllers/CorresponsableController.php';
 
@@ -333,6 +334,15 @@ if (isset($_POST['idSubContrato'])) {//actualizando contrato en detalle
                     }
                 }
 
+                // Si el documento actualizado ya cumplió su Fecha de Plazo (en atraso) y sigue Pendiente,
+                // enviar correo diferenciado al Responsable y a los Corresponsables
+                try {
+                    $serviceMailAtraso = new Mail();
+                    $serviceMailAtraso->notificarAtrasoDocumentoPorId($idDoc);
+                } catch (Throwable $tAtraso) {
+                    error_log("Error enviando notificación de atraso al actualizar documento ID {$idDoc}: " . $tAtraso->getMessage());
+                }
+
 
 
                 //ELIMINANDO ACCIONES ANTIGUAS E INSERTANDO NUEVAS
@@ -447,6 +457,13 @@ if (isset($_POST['idSubContrato'])) {//actualizando contrato en detalle
                 }
 
                 $respuesta = array("exito" => $serviceDetalleDoc->actualizarDetalleDocumento($detalleDocumento), "idDocumento" => $idDoc); //codigo que se realiza para ejev¿cuta el metodo subirDjuntos en el lado del cliente
+
+                try {
+                    $serviceMailAtraso = new Mail();
+                    $serviceMailAtraso->notificarAtrasoDocumentoPorId($idDoc);
+                } catch (Throwable $tAtraso) {
+                    error_log("Error enviando notificación de atraso al actualizar documento salida ID {$idDoc}: " . $tAtraso->getMessage());
+                }
 
                 echo json_encode($respuesta); //retornando array en json
 

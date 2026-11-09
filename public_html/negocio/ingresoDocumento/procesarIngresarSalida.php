@@ -192,6 +192,7 @@ if ($_POST) {
             $serviceMail = new Mail();
             $mensaje = $serviceMail->generarBodyMailGenerico($asunto);
             $serviceMail->enviarMail($titulo, $mensaje, $correo);
+            $serviceMail->notificarAtrasoDocumentoPorId($idDocumento);
             // fin mail.
         } catch (Exception $e) {
             error_log("Error sending email: " . $e->getMessage());
