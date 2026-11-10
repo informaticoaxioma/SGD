@@ -296,15 +296,6 @@ function cargaTutoriales() {
 
     });
 }
-function cargaBases(idBas) {
-
-    $.get("bases/bases.php?idBas=" + idBas, function (r) {
-
-        $("#contenedorAjax").html(r);
-        $("#headerInicio").empty();
-
-    });
-}
 
 function cargarChatIA() {
     $.get("chatIA/chatIA.php", function (r) {

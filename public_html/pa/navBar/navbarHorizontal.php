@@ -189,9 +189,6 @@
             <li>
                 <a href="#Manuales" onclick="cargaTutoriales()"><i class="fa fa-fw fa-play-circle-o"></i>Video Tutorial</a>
             </li>
-             <li>
-                <a href="#Bases" onclick="cargaBases(<?php echo $usuarioSession->getIdContrato(); ?>)"><i class="fa fa-fw fa-file"></i>Bases de Licitación</a>
-            </li>
 
         </ul>
     </div>
