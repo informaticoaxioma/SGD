@@ -1,4 +1,5 @@
 <?php
+require_once '../../data/config_ai.php';
 require_once '../../data/Usuario.php';
 
 session_start();
@@ -12,11 +13,12 @@ $usuarioSession = $_SESSION['usuario'];
 $userContractId = is_object($usuarioSession) && method_exists($usuarioSession, 'getIdContrato')
     ? (int)$usuarioSession->getIdContrato()
     : 0;
+$tieneAccesoContrato = contratoTieneAccesoChatIA($userContractId);
 session_write_close();
 
-if ($userContractId !== 41) {
+if (!$tieneAccesoContrato) {
     http_response_code(403);
-    die("Acceso restringido: Este módulo solo está habilitado para usuarios del contrato autorizado.");
+    die("Acceso restringido: Este módulo solo está habilitado para usuarios de los contratos autorizados.");
 }
 
 $token = isset($_GET['token']) ? trim((string)$_GET['token']) : '';

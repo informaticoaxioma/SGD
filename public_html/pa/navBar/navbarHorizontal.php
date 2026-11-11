@@ -119,7 +119,10 @@
             <li>
                 <a href=#buscador onclick="cargarBuscador()"><i class="fa fa-fw fa-search"></i> Buscador</a>
             </li>      
-            <?php if ((int)$usuarioSession->getIdContrato() === 41): ?>
+            <?php
+            require_once __DIR__ . '/../../data/config_ai.php';
+            if (contratoTieneAccesoChatIA($usuarioSession->getIdContrato())):
+            ?>
             <li>
                 <a href="#chatIA" onclick="cargarChatIA()"><i class="fa fa-fw fa-comments"></i> Chat con IA</a>
             </li>

@@ -11,9 +11,6 @@ if (!isset($_SESSION['usuario'])) {
 }
 $usuarioSession = $_SESSION['usuario'];
 $idContratoUsuario = (int)$usuarioSession->getIdContrato();
-if ($idContratoUsuario !== 41) {
-    die('<div class="alert alert-danger" style="margin:20px;"><i class="fa fa-lock"></i>&nbsp;Acceso restringido: El módulo Chat con IA solo está habilitado para usuarios del contrato autorizado.</div>');
-}
 $nombreUsuarioCompleto = trim($usuarioSession->getNombre() . " " . $usuarioSession->getApellidoP() . " " . $usuarioSession->getApellidoM());
 
 $nombreContratoUsuario = "Contrato #" . $idContratoUsuario;
@@ -25,6 +22,10 @@ try {
     }
 } catch (Exception $e) {
     // Mantener nombre por defecto si falla la consulta
+}
+
+if (!contratoTieneAccesoChatIA($idContratoUsuario, $nombreContratoUsuario)) {
+    die('<div class="alert alert-danger" style="margin:20px;"><i class="fa fa-lock"></i>&nbsp;Acceso restringido: El módulo Chat con IA solo está habilitado para usuarios de los contratos autorizados.</div>');
 }
 ?>
 <div class="row">
