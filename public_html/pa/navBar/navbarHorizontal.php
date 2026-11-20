@@ -192,6 +192,9 @@
             <li>
                 <a href="#Manuales" onclick="cargaTutoriales()"><i class="fa fa-fw fa-play-circle-o"></i>Video Tutorial</a>
             </li>
+            <li>
+                <a href="https://signin.sgo.cl/login" target="_blank" rel="noopener noreferrer"><i class="fa fa-fw fa-book"></i> Libro Comunicaciones</a>
+            </li>
 
         </ul>
     </div>
