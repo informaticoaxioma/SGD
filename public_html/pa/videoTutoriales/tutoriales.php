@@ -12,7 +12,7 @@
         <div class="form-group">
         <label for="nombre" class="col-sm-4 control-label">Manual de Usuario</label>
         <div class="col-sm-6">
-        <a id="descargar" name="descargar" class="btn btn-success btn-sm" href="videoTutoriales/files/Manual_Gestor_Documental.pdf" target="_blank"><i class="fa fa-download"></i>&nbsp;Descargar</a>
+        <a id="descargar" name="descargar" class="btn btn-success btn-sm" href="videoTutoriales/files/Manual_Gestor_Documental.pdf?v=<?php echo @filemtime(__DIR__ . '/files/Manual_Gestor_Documental.pdf'); ?>" target="_blank"><i class="fa fa-download"></i>&nbsp;Descargar</a>
         </div>
         </div>
         <!-- *********************************** -->
